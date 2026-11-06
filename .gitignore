@@ -1,0 +1,31 @@
+node_modules/
+dist/
+release/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local design history and user-provided reference captures.
+/docs/references/
+/docs/sketches/
+/docs/architecture-plan.md
+/docs/settings.md
+/docs/implementation.md
+
+# Local credentials and signing material.
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*kubeconfig*
+id_rsa
+id_ed25519
+/secrets/
+/credentials/
+*credentials*.json
+*secrets*.json
+*token*.json

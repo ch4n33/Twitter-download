@@ -1,0 +1,23 @@
+{
+  "name": "twitter-download",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0 <25" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "check": "npm run typecheck && npm test && npm run build",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.3.7",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "fflate": "0.8.3",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

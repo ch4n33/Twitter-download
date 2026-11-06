@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>다운로드 설정</title>
+    <link rel="stylesheet" href="./popup.css">
+    <script type="module" src="./index.js"></script>
+  </head>
+  <body>
+    <main class="popup" id="settings-popup">
+      <header class="popup-header">
+        <p class="popup-brand">X 미디어 다운로드</p>
+        <h1>다운로드 설정</h1>
+      </header>
+
+      <form id="settings-form" novalidate>
+        <section class="settings-section" aria-labelledby="location-heading">
+          <h2 class="section-heading" id="location-heading">저장 위치</h2>
+          <div class="default-folder">
+            <span>기본 다운로드 폴더 예시</span>
+            <code>~/Download</code>
+          </div>
+          <label class="input-label" for="subdirectory">저장 하위 폴더</label>
+          <input
+            id="subdirectory"
+            name="subdirectory"
+            type="text"
+            placeholder="예: media"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="subdirectory-help subdirectory-error"
+            aria-invalid="false"
+          >
+          <p class="field-help" id="subdirectory-help">기본 다운로드 폴더 안의 폴더 한 개</p>
+          <p class="field-error" id="subdirectory-error" role="alert" hidden></p>
+        </section>
+
+        <fieldset class="settings-section choice-section">
+          <legend>자동 폴더 구성</legend>
+          <label class="choice" for="group-none">
+            <input id="group-none" type="radio" name="grouping" value="none" checked>
+            <span class="choice-copy"><span class="choice-title">그룹 없이 저장</span></span>
+          </label>
+          <label class="choice" for="group-date">
+            <input id="group-date" type="radio" name="grouping" value="date">
+            <span class="choice-copy">
+              <span class="choice-title">다운로드 날짜별</span>
+              <span class="choice-example">예: 날짜 폴더</span>
+            </span>
+          </label>
+          <label class="choice" for="group-author">
+            <input id="group-author" type="radio" name="grouping" value="author">
+            <span class="choice-copy">
+              <span class="choice-title">작성자별</span>
+              <span class="choice-example">예: @sample_photo</span>
+            </span>
+          </label>
+        </fieldset>
+
+        <fieldset class="settings-section choice-section">
+          <legend>파일 이름</legend>
+          <label class="choice" for="filename-original">
+            <input id="filename-original" type="radio" name="filename" value="original" checked>
+            <span class="choice-copy">
+              <span class="choice-title">원본 미디어 파일명</span>
+              <span class="choice-example">HWaP4JDbYAA8eTG.jpeg</span>
+            </span>
+          </label>
+          <label class="choice" for="filename-post">
+            <input id="filename-post" type="radio" name="filename" value="post">
+            <span class="choice-copy">
+              <span class="choice-title">작성자-게시물 ID-순번</span>
+              <span class="choice-example">sample_photo-2118530055324254686-1.jpeg · 실제 확장자 유지</span>
+            </span>
+          </label>
+        </fieldset>
+
+        <section class="settings-section size-section" aria-labelledby="size-heading">
+          <div class="size-row">
+            <div>
+              <h2 class="section-heading" id="size-heading">이미지 크기</h2>
+              <label class="size-label" for="original-size">원본 크기로 저장</label>
+            </div>
+            <input id="original-size" class="switch" type="checkbox" role="switch" checked aria-describedby="size-help">
+          </div>
+          <p class="field-help" id="size-help">끄면 타임라인에 표시된 크기로 저장돼요.</p>
+        </section>
+      </form>
+
+      <section class="settings-section preview-section" aria-label="저장 경로 예시">
+        <div class="preview" aria-live="polite">
+          <span class="preview-label">예상 저장 위치 · 기본 폴더 예시</span>
+          <code id="path-preview" class="preview-path">~/Download/HWaP4JDbYAA8eTG.jpeg</code>
+          <span id="quality-preview" class="preview-quality">이미지 크기: 원본 크기</span>
+        </div>
+      </section>
+
+      <p id="save-status" class="save-status" role="status" aria-live="polite">설정을 불러오는 중…</p>
+    </main>
+  </body>
+</html>

@@ -2,7 +2,7 @@
 
 현재 보고 있는 X 게시물의 정적 사진을 저장하는 Chrome 확장 프로그램입니다. 사진 한 장이나 확인된 첨부 사진 전체를 저장하고, 이미지 크기·저장 폴더·파일명 규칙을 설정할 수 있습니다. 동영상과 애니메이션 GIF 저장은 지원하지 않습니다. X와 제휴·승인 관계가 없는 독립 프로젝트입니다.
 
-![Elon Musk 프로필에서 사진 저장](docs/store/elonmusk-profile-1280x800.jpg)
+![Elon Musk 게시물에서 사진 저장](docs/store/elonmusk-photo-cropped-640x400.jpg)
 
 ## 개발자 설치
 

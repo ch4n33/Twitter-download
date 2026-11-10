@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { DownloadJob, DownloadStartRequest, ExtensionResponse, PostSnapshot } from '../../src/core/types';
 import type { PostReadResult } from '../../src/x/post-reader';
-import { createContentController } from '../../src/content/controller';
+import { COMPLETION_NOTICE_MS, createContentController } from '../../src/content/controller';
 
 const contentCss = readFileSync(resolve(process.cwd(), 'src/content/content.css'), 'utf8');
 
@@ -154,6 +154,102 @@ function installContentStyles(document: Document, nativeCss: string): () => void
 }
 
 describe('in-page photo controls', () => {
+  it('shows conversion progress without marking the attachment saved before native completion', async () => {
+    document.body.replaceChildren();
+    const fixture = makeFixture(document, 1);
+    fixture.result.snapshot.photos[0]!.kind = 'animated_gif';
+    fixture.result.snapshot.photos[0]!.extension = 'mp4';
+    const job = makeJob(fixture.result.snapshot, [fixture.result.snapshot.photos[0]!.key]);
+    job.items[0] = { ...job.items[0]!, state: 'converting', outputFormat: 'gif', progress: 35 };
+    const harness = makeHarness(fixture, { send: async () => ({ ok: true, job }), get: async () => ({ ok: true, job }) });
+    harness.controller.start();
+    try {
+      fixture.wrappers[0]!.querySelector<HTMLButtonElement>('button')!.click();
+      await vi.waitFor(() => expect(fixture.post.querySelector('.x-download-status')?.textContent).toContain('GIF 변환 중: 35%'));
+      expect(fixture.wrappers[0]!.querySelector('button')?.getAttribute('data-download-state')).toBe('download');
+      expect(fixture.wrappers[0]!.querySelector<HTMLButtonElement>('button')!.disabled).toBe(true);
+      [...harness.statusListeners][0]!({ ...job, items: [{ ...job.items[0]!, state: 'in_progress', downloadId: 500 }] });
+      expect(fixture.post.querySelector('.x-download-status')?.textContent).toContain('저장 중');
+    } finally { harness.controller.stop(); }
+  });
+
+  it('hides success after two seconds without restarting on duplicate status or rebuilt controls', async () => {
+    document.body.replaceChildren();
+    const fixture = makeFixture(document, 1, 1, 'complete', 'x:status:notice-case');
+    const job = makeJob(fixture.result.snapshot, [fixture.result.snapshot.photos[0]!.key]);
+    const harness = makeHarness(fixture, { send: async () => ({ ok: true, job }), get: async () => ({ ok: true, job }) });
+    harness.controller.start();
+    fixture.wrappers[0]!.querySelector<HTMLButtonElement>('button')!.click();
+    await vi.waitFor(() => expect(fixture.post.querySelector('.x-download-status')?.textContent).toContain('저장 중'));
+    vi.useFakeTimers();
+    try {
+      const complete = { ...job, state: 'complete' as const, items: job.items.map(item => ({ ...item, state: 'complete' as const })) };
+      const listener = [...harness.statusListeners][0]!;
+      listener(complete);
+      expect(fixture.post.querySelector<HTMLElement>('.x-download-status')!.hidden).toBe(false);
+      vi.advanceTimersByTime(1000);
+      const replacement = document.createElement('div');
+      fixture.wrappers[0]!.replaceWith(replacement);
+      harness.setResult({ ...fixture.result, photoTargets: new Map([[fixture.result.snapshot.photos[0]!.key, replacement]]) });
+      harness.controller.reconcile(fixture.post);
+      listener(complete);
+      vi.advanceTimersByTime(COMPLETION_NOTICE_MS - 1001);
+      expect(fixture.post.querySelector<HTMLElement>('.x-download-status')!.hidden).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(fixture.post.querySelector<HTMLElement>('.x-download-status')!.hidden).toBe(true);
+      expect(replacement.querySelector('button')?.getAttribute('data-download-state')).toBe('saved');
+      expect(replacement.querySelector('button')?.getAttribute('aria-label')).toContain('이미 저장한');
+      replacement.querySelector<HTMLButtonElement>('button')!.click();
+      expect(replacement.querySelector('button')?.getAttribute('data-download-state')).toBe('saved');
+    } finally {
+      harness.controller.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps partial failure visible and marks only successfully saved attachments', async () => {
+    document.body.replaceChildren();
+    const fixture = makeFixture(document, 2);
+    const job = makeJob(fixture.result.snapshot, fixture.result.snapshot.photos.map(photo => photo.key));
+    const harness = makeHarness(fixture, { send: async () => ({ ok: true, job }), get: async () => ({ ok: true, job }) });
+    harness.controller.start();
+    fixture.actionRow.querySelector<HTMLButtonElement>('[data-x-download-control="bulk"]')!.click();
+    await vi.waitFor(() => expect(fixture.post.querySelector('.x-download-status')?.textContent).toContain('저장 중'));
+    vi.useFakeTimers();
+    try {
+      [...harness.statusListeners][0]!({ ...job, state: 'partial', items: [
+        { ...job.items[0]!, state: 'complete' },
+        { ...job.items[1]!, state: 'failed', error: 'connection lost' },
+      ] });
+      vi.advanceTimersByTime(COMPLETION_NOTICE_MS + 1000);
+      expect(fixture.post.querySelector<HTMLElement>('.x-download-status')!.hidden).toBe(false);
+      expect(fixture.post.querySelector('.x-download-status')!.textContent).toContain('connection lost');
+      expect(fixture.wrappers[0]!.querySelector('button')?.getAttribute('data-download-state')).toBe('saved');
+      expect(fixture.wrappers[1]!.querySelector('button')?.getAttribute('data-download-state')).toBe('download');
+      expect(fixture.actionRow.querySelector('[data-x-download-control="bulk"]')?.getAttribute('data-download-state')).toBe('download');
+    } finally {
+      harness.controller.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('provides a single-video action and sends its MP4 as the complete selection', async () => {
+    document.body.replaceChildren();
+    const fixture = makeFixture(document, 1);
+    fixture.result.snapshot.photos[0] = { ...fixture.result.snapshot.photos[0]!, kind: 'video', extension: 'mp4',
+      displayedUrl: 'https://video.twimg.com/ext_tw_video/88201/pu/vid/640x360/single.mp4', originalUrl: null };
+    const harness = makeHarness(fixture);
+    harness.controller.start();
+    const button = fixture.actionRow.querySelector<HTMLButtonElement>('[data-x-download-control="bulk"]')!;
+    expect(button.getAttribute('aria-label')).toBe('동영상 1 저장');
+    expect(button.disabled).toBe(false);
+    button.click();
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    expect(harness.requests[0]!.selection).toBe('all');
+    expect(harness.requests[0]!.post.photos[0]!.extension).toBe('mp4');
+    harness.controller.stop();
+  });
+
   it('preserves X class-based absolute photo geometry while adding the overlay button', () => {
     document.body.replaceChildren();
     const removeStyles = installContentStyles(document, '.native-photo-media { position: absolute; inset: 0; top: 0; right: 0; bottom: 0; left: 0; }');

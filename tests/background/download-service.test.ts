@@ -5,6 +5,7 @@ import type {
   Settings,
   TransportDownload,
 } from '../../src/core/types';
+import type { GifConverter } from '../../src/conversion/protocol';
 import { BackgroundDownloadService } from '../../src/background/download-service';
 import { DownloadJobStore, JOBS_STORAGE_KEY, MAX_TERMINAL_JOBS } from '../../src/background/job-store';
 
@@ -15,6 +16,7 @@ const SETTINGS: Settings = {
   grouping: 'none',
   filename: 'original',
   originalSize: false,
+  saveGifAsGif: false,
 };
 
 class MemorySessionStorage {
@@ -43,6 +45,25 @@ function makePost(count = 2) {
     authorHandle: 'sample',
     photos,
     expectedPhotoCount: count,
+    completeness: 'complete' as const,
+  };
+}
+
+function makeVideoPost(kind: 'video' | 'animated_gif' = 'video') {
+  return {
+    key: 'post-video-42',
+    postId: '42',
+    authorHandle: 'sample',
+    photos: [{
+      key: 'clip-1',
+      kind,
+      index: 1,
+      originalFilename: 'clip-1.mp4',
+      extension: 'mp4' as const,
+      displayedUrl: 'https://video.twimg.com/ext_tw_video/123456/pu/vid/avc1/720x1280/clip-1.mp4',
+      originalUrl: null,
+    }],
+    expectedPhotoCount: 1,
     completeness: 'complete' as const,
   };
 }
@@ -96,6 +117,7 @@ function createService(options: {
   id?: string;
   now?: () => Date;
   isAllowedUrl?: (value: string) => boolean;
+  converter?: GifConverter;
   notify?: (job: DownloadJob) => void | Promise<void>;
 } = {}) {
   const storage = options.storage ?? new MemorySessionStorage();
@@ -108,7 +130,8 @@ function createService(options: {
     loadSettings: async () => options.settings ?? SETTINGS,
     now: options.now ?? (() => new Date(NOW)),
     createId: () => options.id ?? `job-${++generatedId}`,
-    isAllowedUrl: options.isAllowedUrl ?? (url => url.startsWith('https://pbs.twimg.com/')),
+    ...(options.isAllowedUrl ? { isAllowedUrl: options.isAllowedUrl } : {}),
+    ...(options.converter ? { converter: options.converter } : {}),
     notify: options.notify,
   });
   return { service, storage, transport };
@@ -151,6 +174,177 @@ describe('background download service', () => {
     if (!status.ok) return;
     expect(status.job.state).toBe('failed');
     expect(status.job.items[0]?.error).toContain(mime);
+  });
+
+  it('starts direct MP4 tasks for video and animated GIF media with original-size enabled', async () => {
+    for (const kind of ['video', 'animated_gif'] as const) {
+      const transport = fakeTransport();
+      const { service, storage } = createService({
+        transport,
+        settings: { ...SETTINGS, originalSize: true },
+      });
+      const request = makeRequest({ post: makeVideoPost(kind) });
+      const response = await service.handleMessage(request, makeSender());
+      expect(response.ok).toBe(true);
+      expect(transport.starts).toEqual([{
+        url: request.post.photos[0]!.displayedUrl,
+        relativePath: 'clip-1.mp4',
+      }]);
+      expect(storage.values[JOBS_STORAGE_KEY]).toMatchObject({
+        'job-1': { items: [{ expectedKind: kind, relativePath: 'clip-1.mp4' }] },
+      });
+    }
+  });
+
+  it('returns a GIF job before conversion finishes, persists progress, and uses the prepared blob URL', async () => {
+    let reportProgress!: (percent: number) => void;
+    let resolvePrepared!: (value: { url: string }) => void;
+    const prepare = vi.fn((_id: string, _url: string, onProgress: (percent: number) => void) => {
+      reportProgress = onProgress;
+      return new Promise<{ url: string }>(resolve => { resolvePrepared = resolve; });
+    });
+    const release = vi.fn(async () => undefined);
+    const converter: GifConverter = {
+      prepare,
+      reconnect: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/restored.gif' })),
+      release,
+    };
+    const transport = fakeTransport();
+    const { service } = createService({
+      transport,
+      converter,
+      id: 'gif-job',
+      settings: { ...SETTINGS, saveGifAsGif: true },
+    });
+
+    const response = await service.handleMessage(makeRequest({ post: makeVideoPost('animated_gif') }), makeSender());
+    expect(response).toMatchObject({ ok: true, job: {
+      state: 'in_progress', items: [{ state: 'converting', outputFormat: 'gif', progress: 0 }],
+    } });
+    expect(prepare).toHaveBeenCalledWith(
+      'gif-gif-job-0',
+      makeVideoPost('animated_gif').photos[0]!.displayedUrl,
+      expect.any(Function),
+    );
+    expect(transport.starts).toEqual([]);
+
+    reportProgress(42.4);
+    await vi.waitFor(async () => {
+      const status = await service.handleMessage({ type: 'download.getStatus', jobId: 'gif-job' }, makeSender());
+      expect(status).toMatchObject({ ok: true, job: { items: [{ state: 'converting', progress: 42 }] } });
+    });
+    resolvePrepared({ url: 'blob:chrome-extension://extension-id/result-1' });
+    await vi.waitFor(() => expect(transport.starts).toEqual([{
+      url: 'blob:chrome-extension://extension-id/result-1',
+      relativePath: 'clip-1.gif',
+    }]));
+    expect(release).not.toHaveBeenCalled();
+
+    transport.records.set(100, { id: 100, state: 'complete', mime: 'image/gif' });
+    await service.handleTransportChange({ id: 100, state: 'complete' });
+    expect(release).toHaveBeenCalledWith('gif-gif-job-0');
+    const status = await service.handleMessage({ type: 'download.getStatus', jobId: 'gif-job' }, makeSender());
+    expect(status).toMatchObject({ ok: true, job: { state: 'complete', items: [{ outputFormat: 'gif', state: 'complete' }] } });
+  });
+
+  it('rejects a non-GIF native result for a transformed GIF task and releases its URL', async () => {
+    const converter: GifConverter = {
+      prepare: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/result-2' })),
+      reconnect: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/result-2' })),
+      release: vi.fn(async () => undefined),
+    };
+    const transport = fakeTransport();
+    const { service } = createService({
+      transport,
+      converter,
+      id: 'gif-mime-job',
+      settings: { ...SETTINGS, saveGifAsGif: true },
+    });
+    const response = await service.handleMessage(makeRequest({ post: makeVideoPost('animated_gif') }), makeSender());
+    expect(response.ok).toBe(true);
+    await vi.waitFor(() => expect(transport.starts).toHaveLength(1));
+    transport.records.set(100, { id: 100, state: 'complete', mime: 'video/mp4' });
+    await service.handleTransportChange({ id: 100, state: 'complete' });
+    const status = await service.handleMessage({ type: 'download.getStatus', jobId: 'gif-mime-job' }, makeSender());
+    expect(status).toMatchObject({ ok: true, job: { state: 'failed', items: [{ outputFormat: 'gif', state: 'failed' }] } });
+    if (status.ok) expect(status.job.items[0]?.error).toContain('not a supported GIF image');
+    expect(converter.release).toHaveBeenCalledWith('gif-gif-mime-job-0');
+  });
+
+  it('reconnects a converting job after worker restart without restarting conversion', async () => {
+    const storage = new MemorySessionStorage();
+    const pendingConverter: GifConverter = {
+      prepare: vi.fn(() => new Promise<{ url: string }>(() => undefined)),
+      reconnect: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/after-restart' })),
+      release: vi.fn(async () => undefined),
+    };
+    const first = createService({
+      storage,
+      converter: pendingConverter,
+      id: 'restart-gif-job',
+      settings: { ...SETTINGS, saveGifAsGif: true },
+    });
+    const firstResponse = await first.service.handleMessage(makeRequest({ post: makeVideoPost('animated_gif') }), makeSender());
+    expect(firstResponse).toMatchObject({ ok: true, job: { items: [{ state: 'converting' }] } });
+
+    const recoveredTransport = fakeTransport();
+    const recoveredConverter: GifConverter = {
+      prepare: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/unused' })),
+      reconnect: vi.fn(async id => {
+        expect(id).toBe('gif-restart-gif-job-0');
+        return { url: 'blob:chrome-extension://extension-id/after-restart' };
+      }),
+      release: vi.fn(async () => undefined),
+    };
+    const recovered = createService({ storage, transport: recoveredTransport, converter: recoveredConverter });
+    await recovered.service.restore();
+    await vi.waitFor(() => expect(recoveredTransport.starts).toEqual([{
+      url: 'blob:chrome-extension://extension-id/after-restart',
+      relativePath: 'clip-1.gif',
+    }]));
+    expect(recoveredConverter.prepare).not.toHaveBeenCalled();
+  });
+
+  it('fails a restored GIF when offscreen state is missing instead of converting the stored source again', async () => {
+    const storage = new MemorySessionStorage();
+    const pendingConverter: GifConverter = {
+      prepare: vi.fn(() => new Promise<{ url: string }>(() => undefined)),
+      reconnect: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/never-used' })),
+      release: vi.fn(async () => undefined),
+    };
+    const first = createService({
+      storage,
+      converter: pendingConverter,
+      id: 'missing-gif-job',
+      settings: { ...SETTINGS, saveGifAsGif: true },
+    });
+    await first.service.handleMessage(makeRequest({ post: makeVideoPost('animated_gif') }), makeSender());
+    const converter: GifConverter = {
+      prepare: vi.fn(async () => ({ url: 'blob:chrome-extension://extension-id/duplicate' })),
+      reconnect: vi.fn(async () => { throw new Error('The offscreen GIF conversion state is missing; it was not restarted.'); }),
+      release: vi.fn(async () => undefined),
+    };
+    const recovered = createService({ storage, converter });
+    await recovered.service.restore();
+    await vi.waitFor(async () => {
+      const status = await recovered.service.handleMessage({ type: 'download.getStatus', jobId: 'missing-gif-job' }, makeSender());
+      expect(status).toMatchObject({ ok: true, job: { state: 'failed', items: [{ state: 'failed' }] } });
+    });
+    expect(converter.prepare).not.toHaveBeenCalled();
+    const status = await recovered.service.handleMessage({ type: 'download.getStatus', jobId: 'missing-gif-job' }, makeSender());
+    if (status.ok) expect(status.job.items[0]?.error).toContain('GIF 저장 옵션을 끄면 MP4로 저장할 수 있어요.');
+  });
+
+  it('rejects image MIME for an MP4 task', async () => {
+    const transport = fakeTransport();
+    const { service } = createService({ transport });
+    const response = await service.handleMessage(makeRequest({ post: makeVideoPost() }), makeSender());
+    expect(response.ok).toBe(true);
+    transport.records.set(100, { id: 100, state: 'complete', mime: 'image/jpeg' });
+    await service.handleTransportChange({ id: 100, state: 'complete' });
+    const status = await service.handleMessage({ type: 'download.getStatus', jobId: 'job-1' }, makeSender());
+    expect(status).toMatchObject({ ok: true, job: { state: 'failed', items: [{ expectedKind: 'video', state: 'failed' }] } });
+    if (status.ok) expect(status.job.items[0]?.error).toContain('not a supported MP4 video');
   });
 
   it('reconciles a completion event that arrived before its download ID was persisted', async () => {
@@ -196,6 +390,23 @@ describe('background download service', () => {
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     expect(status.job.state).toBe('complete');
+    expect(recoveredTransport.starts).toHaveLength(0);
+  });
+
+  it('restores the expected video MIME across worker recreation', async () => {
+    const storage = new MemorySessionStorage();
+    const firstTransport = fakeTransport();
+    const first = createService({ storage, transport: firstTransport, id: 'restart-video-job' });
+    const started = await first.service.handleMessage(makeRequest({ post: makeVideoPost() }), makeSender());
+    expect(started.ok).toBe(true);
+    expect(await first.service.handleMessage({ type: 'download.getStatus', jobId: 'restart-video-job' }, makeSender()))
+      .toMatchObject({ ok: true, job: { items: [{ expectedKind: 'video', state: 'in_progress' }] } });
+
+    const recoveredTransport = fakeTransport();
+    recoveredTransport.records.set(100, { id: 100, state: 'complete', mime: 'video/mp4' });
+    const recovered = createService({ storage, transport: recoveredTransport });
+    const status = await recovered.service.handleMessage({ type: 'download.getStatus', jobId: 'restart-video-job' }, makeSender());
+    expect(status).toMatchObject({ ok: true, job: { state: 'complete', items: [{ expectedKind: 'video', state: 'complete' }] } });
     expect(recoveredTransport.starts).toHaveLength(0);
   });
 

@@ -1,5 +1,6 @@
-import type { PhotoAsset, PostSnapshot, StaticImageExtension } from '../core/types';
-import { getStaticImageUrlInfo, isAllowedImageUrl } from './media-urls';
+import type { MediaAsset, MediaExtension, PostSnapshot } from '../core/types';
+import { getStaticImageUrlInfo, getVideoUrlInfo, isAllowedImageUrl, isAllowedVideoUrl } from './media-urls';
+import type { XPostMediaAssetMetadata, XPostMediaMetadata } from './media-metadata';
 import { belongsToPost, findOwningPost, isInsideQuote, X_SELECTORS } from './selectors';
 
 export interface PostReadResult {
@@ -13,9 +14,11 @@ interface MediaSource {
   ready: boolean;
 }
 
-interface PhotoSlot {
+interface MediaSlot {
   wrapper: HTMLElement;
   explicitIndex: number | null;
+  kind: 'image' | 'video' | 'animated_gif';
+  metadata: XPostMediaAssetMetadata | null;
   source: MediaSource | null;
 }
 
@@ -53,7 +56,7 @@ function statusLinkInfo(href: string | null): StatusLinkInfo | null {
   if (!href) return null;
   let path: string;
   try { path = new URL(href, 'https://x.com').pathname; } catch { return null; }
-  const match = /(?:^|\/)status\/(\d+)(?:\/photo\/(\d+))?(?:\/|$)/i.exec(path);
+  const match = /(?:^|\/)status\/(\d+)(?:\/(?:photo|video)\/(\d+))?(?:\/|$)/i.exec(path);
   if (!match) return null;
   const segments = path.split('/').filter(Boolean);
   const statusSegment = segments.findIndex((segment, index) =>
@@ -276,7 +279,47 @@ function photoLinkIndices(post: HTMLElement, identity: PostIdentity): number[] {
     .filter((index): index is number => index !== null);
 }
 
-function getPhotoIndex(slot: PhotoSlot): number | null {
+function videoWrappers(post: HTMLElement, identity: PostIdentity): HTMLElement[] {
+  return elementsWithin<HTMLElement>(post, `${X_SELECTORS.videoMount}, ${X_SELECTORS.videoElement}`)
+    .filter(wrapper => belongsToPostIdentity(wrapper, post, identity)
+      && !statusRoleLinkBoundary(wrapper, post))
+    .filter(wrapper => {
+      let ancestor = wrapper.parentElement;
+      while (ancestor && ancestor !== post) {
+        if (ancestor.matches(X_SELECTORS.videoMount)) return false;
+        ancestor = ancestor.parentElement;
+      }
+      return true;
+    });
+}
+
+function readVideoSource(
+  wrapper: HTMLElement,
+  post: HTMLElement,
+  metadata: XPostMediaAssetMetadata | null,
+): MediaSource | null {
+  if (metadata && metadata.kind !== 'image' && metadata.url && isAllowedVideoUrl(metadata.url)) {
+    return { url: metadata.url, ready: true };
+  }
+  const candidates: Array<{ value: string | null; ready: boolean }> = [];
+  if (wrapper.matches('video')) {
+    const video = wrapper as HTMLVideoElement;
+    candidates.push({ value: video.currentSrc || null, ready: true }, { value: video.getAttribute('src'), ready: true });
+  }
+  for (const video of Array.from(wrapper.querySelectorAll('video'))) {
+    if (!belongsToPost(video, post)) continue;
+    candidates.push({ value: (video as HTMLVideoElement).currentSrc || null, ready: true });
+    candidates.push({ value: video.getAttribute('src'), ready: true });
+  }
+  for (const source of Array.from(wrapper.querySelectorAll('source[src]'))) {
+    if (!belongsToPost(source, post)) continue;
+    candidates.push({ value: source.getAttribute('src'), ready: true });
+  }
+  const direct = candidates.find(candidate => candidate.value && isAllowedVideoUrl(candidate.value));
+  return direct?.value ? { url: direct.value, ready: direct.ready } : null;
+}
+
+function getMediaIndex(slot: MediaSlot): number | null {
   return slot.explicitIndex;
 }
 
@@ -304,7 +347,7 @@ function stableMediaIdentity(value: string): string {
   }
 }
 
-function assignIndices(slots: PhotoSlot[]): number[] {
+function assignIndices(slots: MediaSlot[]): number[] {
   const reserved = new Set(slots.map(slot => slot.explicitIndex).filter((index): index is number => index !== null));
   const used = new Set<number>();
   let next = 1;
@@ -328,21 +371,49 @@ function isContiguous(indices: number[], count: number): boolean {
   return actual.size === count;
 }
 
-export function readPostSnapshot(post: HTMLElement): PostReadResult | null {
+export function readPostSnapshot(
+  post: HTMLElement,
+  lookupMediaMetadata?: (postId: string) => XPostMediaMetadata | null,
+): PostReadResult | null {
   if (!post.matches(X_SELECTORS.post) || findOwningPost(post) !== post) return null;
   const identity = readPostIdentity(post);
-  const wrappers = elementsWithin<HTMLElement>(post, X_SELECTORS.photo)
-    .filter(wrapper => belongsToPostIdentity(wrapper, post, identity) && !wrapper.closest(EXCLUDED_SOURCE_SELECTORS));
+  const metadata = identity.postId ? lookupMediaMetadata?.(identity.postId) ?? null : null;
+  const photoWrappers = elementsWithin<HTMLElement>(post, X_SELECTORS.photo)
+    .filter(wrapper => belongsToPostIdentity(wrapper, post, identity)
+      && !wrapper.closest(EXCLUDED_SOURCE_SELECTORS) && !wrapper.querySelector('video'));
+  const videoElements = videoWrappers(post, identity);
+  const wrappers = [...new Set([...photoWrappers, ...videoElements])]
+    .sort((left, right) => {
+      const relation = left.compareDocumentPosition(right);
+      if (relation & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (relation & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
   if (wrappers.length === 0) return null;
 
   const linkIndices = photoLinkIndices(post, identity);
   const expectedHint = readExpectedCount(post, identity);
-  const slots: PhotoSlot[] = wrappers.map(wrapper => ({
-    wrapper,
-    explicitIndex: readExplicitIndex(wrapper, post, identity),
-    source: readMediaSource(wrapper, post),
-  }));
+  const slots: MediaSlot[] = wrappers.map(wrapper => {
+    const isPhoto = wrapper.matches(X_SELECTORS.photo);
+    const explicitIndex = readExplicitIndex(wrapper, post, identity);
+    return {
+      wrapper,
+      explicitIndex,
+      kind: isPhoto ? 'image' : /gif/i.test(wrapper.getAttribute('data-testid') ?? '') ? 'animated_gif' : 'video',
+      metadata: null,
+      source: isPhoto ? readMediaSource(wrapper, post) : null,
+    };
+  });
   const indices = assignIndices(slots);
+  const metadataByIndex = new Map(metadata?.assets.map(asset => [asset.index, asset]) ?? []);
+  slots.forEach((slot, index) => {
+    if (slot.kind === 'image') return;
+    const item = metadataByIndex.get(indices[index] ?? -1) ?? null;
+    slot.metadata = item?.kind !== 'image' ? item : null;
+    if (slot.metadata?.kind === 'animated_gif') slot.kind = 'animated_gif';
+    else if (slot.metadata?.kind === 'video') slot.kind = 'video';
+    slot.source = readVideoSource(slot.wrapper, post, slot.metadata);
+  });
   const seenIndices = new Set<number>();
   const duplicateIndex = indices.some(index => {
     if (seenIndices.has(index)) return true;
@@ -350,27 +421,39 @@ export function readPostSnapshot(post: HTMLElement): PostReadResult | null {
     return false;
   });
 
-  const postSignature = [identity.authorHandle ?? '', identity.bodyText, ...slots.map((slot, index) => `${indices[index]}:${slot.source?.url ?? 'pending'}`)].join('|');
+  const postSignature = [identity.authorHandle ?? '', identity.bodyText,
+    ...slots.map((slot, index) => `${slot.kind}:${indices[index]}:${slot.source?.url ?? 'pending'}`)].join('|');
   const postKey = identity.postId ? `x:status:${identity.postId}` : `x:post:${hash(postSignature)}`;
 
-  const photos: PhotoAsset[] = [];
+  const photos: MediaAsset[] = [];
   const photoTargets = new Map<string, HTMLElement>();
   const unresolvedSlots = slots.some(slot => !slot.source || !slot.source.ready);
   const usedAssetKeys = new Set<string>();
   slots.forEach((slot, slotIndex) => {
     if (!slot.source) return;
     const index = indices[slotIndex];
-    const info = getStaticImageUrlInfo(slot.source.url);
-    if (!info) return;
-    const key = `${postKey}:photo:${index}:${hash(stableMediaIdentity(slot.source.url))}`;
+    let info: { originalFilename: string | null; extension: MediaExtension; originalUrl: string | null };
+    let key: string;
+    if (slot.kind === 'image') {
+      const imageInfo = getStaticImageUrlInfo(slot.source.url);
+      if (!imageInfo) return;
+      info = imageInfo;
+      key = `${postKey}:photo:${index}:${hash(stableMediaIdentity(slot.source.url))}`;
+    } else {
+      const videoInfo = getVideoUrlInfo(slot.source.url);
+      if (!videoInfo || !isAllowedVideoUrl(slot.source.url)) return;
+      info = { originalFilename: videoInfo.originalFilename, extension: 'mp4', originalUrl: null };
+      const mediaIdentity = slot.metadata?.mediaId ?? videoInfo.mediaId ?? `index-${index}`;
+      key = `${postKey}:media:${mediaIdentity}`;
+    }
     if (usedAssetKeys.has(key)) return;
     usedAssetKeys.add(key);
     photos.push({
       key,
-      kind: 'image',
+      kind: slot.kind,
       index,
       originalFilename: info.originalFilename,
-      extension: info.extension as StaticImageExtension,
+      extension: info.extension,
       displayedUrl: slot.source.url,
       originalUrl: info.originalUrl,
     });
@@ -381,17 +464,17 @@ export function readPostSnapshot(post: HTMLElement): PostReadResult | null {
   const carousel = isCarousel(post, identity, linkIndices) || slots.length > 1;
   const allLinkIndices = [...new Set(linkIndices)].sort((a, b) => a - b);
   const fullPhotoLinkSequence = allLinkIndices.length > 1 && isContiguous(allLinkIndices, allLinkIndices.length);
-  let expectedPhotoCount = expectedHint.conflict ? null : expectedHint.count;
-  if (expectedPhotoCount === null && fullPhotoLinkSequence
+  let expectedPhotoCount = metadata?.expectedMediaCount ?? (expectedHint.conflict ? null : expectedHint.count);
+  if (!metadata && expectedPhotoCount === null && fullPhotoLinkSequence
     && slots.length === allLinkIndices.length && photos.length === allLinkIndices.length) {
     expectedPhotoCount = allLinkIndices.length;
   }
-  if (expectedPhotoCount === null && !expectedHint.conflict && !carousel
+  if (!metadata && expectedPhotoCount === null && !expectedHint.conflict && !carousel
     && photos.length === slots.length && !unresolvedSlots && !duplicateIndex
     && isContiguous(indices, slots.length)) {
     expectedPhotoCount = slots.length;
   }
-  if (expectedPhotoCount === null && !expectedHint.conflict && slots.length === 1
+  if (!metadata && expectedPhotoCount === null && !expectedHint.conflict && slots.length === 1
     && photos.length === 1 && !carousel && indices[0] === 1 && linkIndices.every(index => index === 1)) {
     expectedPhotoCount = 1;
   }
@@ -428,7 +511,7 @@ export function readPostSnapshot(post: HTMLElement): PostReadResult | null {
     expectedPhotoCount: snapshot.expectedPhotoCount,
     completeness: snapshot.completeness,
     bodyText: identity.bodyText,
-    photos: snapshot.photos.map(photo => [photo.key, photo.index, photo.displayedUrl, photo.originalUrl]),
+    photos: snapshot.photos.map(photo => [photo.key, photo.kind, photo.index, photo.displayedUrl, photo.originalUrl]),
   });
   return { snapshot, photoTargets, fingerprint };
 }

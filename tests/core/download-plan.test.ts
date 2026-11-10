@@ -31,9 +31,28 @@ const settings: Settings = {
   grouping: 'none',
   filename: 'original',
   originalSize: true,
+  saveGifAsGif: false,
 };
 
 describe('createDownloadPlan', () => {
+  it('converts only animated GIF sources when enabled and leaves the MP4 source identity intact', () => {
+    const animation: PhotoAsset = { key: 'loop-48', kind: 'animated_gif', index: 2,
+      originalFilename: 'motion-source.mp4', extension: 'mp4',
+      displayedUrl: 'https://video.twimg.com/tweet_video/motion-source.mp4', originalUrl: null };
+    const video: PhotoAsset = { ...animation, key: 'video-49', kind: 'video', index: 3 };
+    const post = makePost([makePhoto(1), animation, video]);
+    const result = createDownloadPlan(post, 'all', { ...settings, saveGifAsGif: true }, { now: new Date(2026, 10, 10) });
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.value.tasks.map(task => [task.kind, task.outputFormat, task.transform])).toEqual([
+      ['image', 'jpeg', undefined], ['animated_gif', 'gif', 'mp4-to-gif'], ['video', 'mp4', undefined],
+    ]);
+    expect(result.value.tasks[1]).toMatchObject({ url: animation.displayedUrl, extension: 'mp4', relativePath: 'motion-source.gif' });
+    expect(animation.extension).toBe('mp4');
+    const disabled = createDownloadPlan(post, { photoKeys: [animation.key] }, settings, { now: new Date(2026, 10, 10) });
+    expect(disabled).toMatchObject({ ok: true, value: { tasks: [{ outputFormat: 'mp4', relativePath: 'motion-source.mp4' }] } });
+    if (disabled.ok) expect(disabled.value.tasks[0]!.transform).toBeUndefined();
+  });
+
   it('uses the original URL by default and records the injected request time', () => {
     const post = makePost([makePhoto(1)]);
     const result = createDownloadPlan(post, 'all', settings, { now: new Date(2026, 10, 6, 9, 30) });
@@ -66,6 +85,38 @@ describe('createDownloadPlan', () => {
         ],
       },
     });
+  });
+
+  it.each(['video', 'animated_gif'] as const)('plans %s as its displayed MP4 regardless of original-size setting', kind => {
+    const media: PhotoAsset = {
+      key: 'clip-1',
+      kind,
+      index: 1,
+      originalFilename: 'clip-1.mp4',
+      extension: 'mp4',
+      displayedUrl: 'https://video.twimg.com/tweet_video/clip-1.mp4?tag=12',
+      originalUrl: null,
+    };
+    const post = makePost([media]);
+    const result = createDownloadPlan(post, 'all', { ...settings, originalSize: true }, {
+      now: new Date(2026, 10, 6),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        tasks: [{
+          photoKey: 'clip-1', kind, extension: 'mp4',
+          url: media.displayedUrl, relativePath: 'clip-1.mp4',
+        }],
+      },
+    });
+  });
+
+  it('rejects a media kind paired with the wrong output extension', () => {
+    const invalid = { ...makePhoto(1), kind: 'video' as const };
+    expect(createDownloadPlan(makePost([invalid]), 'all', settings, { now: new Date(2026, 10, 6) }))
+      .toMatchObject({ ok: false, error: { code: 'invalid_photo_list' } });
   });
 
   it.each([

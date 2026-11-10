@@ -47,7 +47,8 @@ export function createSettingsForm(document: Document): SettingsForm | null {
   const qualityPreview = document.querySelector<HTMLElement>('#quality-preview');
   const saveStatus = document.querySelector<HTMLElement>('#save-status');
   const sizeInput = document.querySelector<HTMLInputElement>('#original-size');
-  if (!form || !folderInput || !folderError || !pathPreview || !qualityPreview || !saveStatus || !sizeInput) return null;
+  const gifOutputInput = document.querySelector<HTMLInputElement>('#save-gif');
+  if (!form || !folderInput || !folderError || !pathPreview || !qualityPreview || !saveStatus || !sizeInput || !gifOutputInput) return null;
   const popupForm = form;
   const subdirectoryInput = folderInput;
   const subdirectoryError = folderError;
@@ -55,6 +56,7 @@ export function createSettingsForm(document: Document): SettingsForm | null {
   const previewQuality = qualityPreview;
   const persistenceStatus = saveStatus;
   const originalSizeInput = sizeInput;
+  const saveGifAsGifInput = gifOutputInput;
 
   const listeners: Array<(settings: Result<Settings>) => void> = [];
   let composingText = false;
@@ -66,6 +68,7 @@ export function createSettingsForm(document: Document): SettingsForm | null {
       grouping: getCheckedValue<Settings['grouping']>(document, 'grouping'),
       filename: getCheckedValue<Settings['filename']>(document, 'filename'),
       originalSize: originalSizeInput.checked,
+      saveGifAsGif: saveGifAsGifInput.checked,
     };
   }
 
@@ -114,6 +117,7 @@ export function createSettingsForm(document: Document): SettingsForm | null {
     if (grouping) grouping.checked = true;
     if (filename) filename.checked = true;
     originalSizeInput.checked = settings.originalSize;
+    saveGifAsGifInput.checked = settings.saveGifAsGif;
     render();
   }
 

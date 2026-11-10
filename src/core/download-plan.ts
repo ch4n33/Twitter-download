@@ -1,9 +1,12 @@
 import { buildRelativePath } from './paths';
 import { validateSettings } from './settings';
+import { outputFormatFor } from './output-format';
 import type {
   DownloadPlan,
   DownloadSelection,
   DownloadTask,
+  MediaAsset,
+  MediaExtension,
   PhotoAsset,
   PlanningContext,
   PostSnapshot,
@@ -23,6 +26,13 @@ function validNow(context: PlanningContext): context is PlanningContext {
   return Boolean(context && context.now && typeof context.now.getTime === 'function' && Number.isFinite(context.now.getTime()));
 }
 
+const IMAGE_EXTENSIONS = new Set<MediaExtension>(['jpg', 'jpeg', 'png', 'webp', 'avif']);
+
+function hasSupportedFormat(asset: MediaAsset): boolean {
+  if (asset.kind === 'image') return IMAGE_EXTENSIONS.has(asset.extension);
+  return (asset.kind === 'video' || asset.kind === 'animated_gif') && asset.extension === 'mp4';
+}
+
 function selectedPhotos(post: PostSnapshot, selection: DownloadSelection): Result<PhotoAsset[]> {
   if (!post || typeof post !== 'object' || !Array.isArray(post.photos) || post.photos.length === 0) {
     return failure('photos_unavailable', '게시물 사진 목록을 확인할 수 없어요.');
@@ -32,7 +42,7 @@ function selectedPhotos(post: PostSnapshot, selection: DownloadSelection): Resul
   const indices = new Set<number>();
   for (const photo of post.photos) {
     if (!photo || typeof photo.key !== 'string' || photo.key.length === 0
-      || !Number.isInteger(photo.index) || photo.index < 1) {
+      || !Number.isInteger(photo.index) || photo.index < 1 || !hasSupportedFormat(photo)) {
       return failure('invalid_photo_list', '게시물 사진 목록을 확인해 주세요.');
     }
     if (keys.has(photo.key) || indices.has(photo.index)) {
@@ -91,11 +101,13 @@ export function createDownloadPlan(
   const tasks: DownloadTask[] = [];
   const warnings = new Set<string>();
   for (const photo of photosResult.value) {
-    const url = safeSettings.originalSize ? photo.originalUrl : photo.displayedUrl;
+    const url = photo.kind === 'image' && safeSettings.originalSize ? photo.originalUrl : photo.displayedUrl;
     if (typeof url !== 'string' || url.length === 0) {
-      return safeSettings.originalSize
+      return photo.kind === 'image' && safeSettings.originalSize
         ? failure('original_image_unavailable', '원본 크기 이미지를 확인할 수 없어요. 작은 이미지로 대체하지 않았어요.')
-        : failure('displayed_image_unavailable', '타임라인 표시 이미지를 확인할 수 없어요.');
+        : failure('displayed_image_unavailable', photo.kind === 'image'
+          ? '타임라인 표시 이미지를 확인할 수 없어요.'
+          : '타임라인 표시 미디어를 확인할 수 없어요.');
     }
 
     const pathResult = buildRelativePath(post, photo, safeSettings, context);
@@ -103,6 +115,10 @@ export function createDownloadPlan(
     tasks.push({
       photoKey: photo.key,
       index: photo.index,
+      kind: photo.kind,
+      extension: photo.extension,
+      outputFormat: outputFormatFor(photo, safeSettings),
+      ...(outputFormatFor(photo, safeSettings) === 'gif' ? { transform: 'mp4-to-gif' as const } : {}),
       url,
       relativePath: pathResult.value.relativePath,
     });

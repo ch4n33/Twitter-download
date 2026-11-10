@@ -1,0 +1,17 @@
+Google Material Symbols
+Source: https://github.com/google/material-design-icons
+Icons: download, download_done (Material Symbols Outlined, 24px)
+License: Apache License, Version 2.0; full text in licenses/material-symbols-Apache-2.0.txt
+Modified: download_done is scaled and positioned with a smaller download icon at
+the lower left to indicate an already-downloaded attachment. These are adapted
+icons, not an official Google design. Path geometry is retained from the source.
+
+MP4Box.js 2.5.0
+Copyright (c) 2012. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
+Source: https://github.com/gpac/mp4box.js
+License: BSD-3-Clause; full text in licenses/mp4box-BSD-3-Clause.txt
+
+gifenc 1.0.3
+Copyright (c) 2017 Matt DesLauriers
+Source: https://github.com/mattdesl/gifenc
+License: MIT; full text in licenses/gifenc-MIT.txt

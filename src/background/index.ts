@@ -1,8 +1,10 @@
 import type { ExtensionResponse } from '../core/types';
 import { createChromeDownloadsTransport } from '../platform/downloads';
+import { createChromeGifConverter } from '../platform/gif-converter';
 import { createBackgroundDownloadService } from './download-service';
 
 const transport = createChromeDownloadsTransport(chrome.downloads);
+const converter = createChromeGifConverter(chrome);
 const sessionStorage = {
   async get(key: string): Promise<Record<string, unknown>> {
     return chrome.storage.session.get(key) as Promise<Record<string, unknown>>;
@@ -16,6 +18,7 @@ const service = createBackgroundDownloadService({
   extensionId: chrome.runtime.id,
   storage: sessionStorage,
   transport,
+  converter,
   notify: async job => {
     try {
       await chrome.tabs.sendMessage(
@@ -35,6 +38,9 @@ transport.subscribe(change => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && typeof message === 'object'
+    && ((message as { target?: unknown }).target === 'gif-offscreen'
+      || (message as { target?: unknown }).target === 'gif-background')) return false;
   void service.handleMessage(message, sender).then(
     response => sendResponse(response),
     () => sendResponse({
@@ -44,3 +50,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   );
   return true;
 });
+
+// Restore conversion state after listeners are live so offscreen events can be rejoined.
+void service.restore().catch(() => undefined);

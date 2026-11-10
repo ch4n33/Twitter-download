@@ -31,9 +31,11 @@ export function findBulkMount(post: HTMLElement): HTMLElement | null {
   return explicitShareGroup ?? groups[0];
 }
 
-/** Use the owned X photo wrapper as an overlay host for the per-photo control. */
+/** Use an owned X image or direct-video wrapper as an overlay host for the per-media control. */
 export function findPhotoMount(wrapper: HTMLElement): HTMLElement | null {
-  if (!wrapper.matches(X_SELECTORS.photo) || wrapper.closest(EXCLUDED_MEDIA)) return null;
+  const isPhoto = wrapper.matches(X_SELECTORS.photo);
+  const isVideo = wrapper.matches(X_SELECTORS.videoMount) || wrapper.matches(X_SELECTORS.videoElement);
+  if ((!isPhoto && !isVideo) || (isPhoto && wrapper.closest(EXCLUDED_MEDIA))) return null;
   const post = findOwningPost(wrapper);
   return post && belongsToPost(wrapper, post) && !isInsideStatusRoleLink(wrapper, post) ? wrapper : null;
 }

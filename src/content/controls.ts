@@ -1,4 +1,5 @@
-import type { DownloadJob, PostSnapshot } from '../core/types';
+import type { DownloadJob, PhotoAsset, PostSnapshot } from '../core/types';
+import { makeDownloadIcon } from './download-icons';
 
 export interface PostControlHandlers {
   onSavePhoto(photoKey: string, event: MouseEvent): void;
@@ -22,27 +23,33 @@ export interface PostControlState {
   requestPending: boolean;
   job: DownloadJob | null;
   error: string | null;
+  savedPhotoKeys?: ReadonlySet<string>;
+  hideCompletedStatus?: boolean;
 }
 
-const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+function mediaLabel(media: PhotoAsset): string {
+  return `${media.kind === 'image' ? '사진' : media.kind === 'animated_gif' ? 'GIF' : '동영상'} ${media.index}`;
+}
 
-function makeDownloadIcon(document: Document, size: number): SVGSVGElement {
-  const svg = document.createElementNS(SVG_NAMESPACE, 'svg');
-  svg.setAttribute('width', String(size));
-  svg.setAttribute('height', String(size));
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
+function photoOnly(snapshot: PostSnapshot): boolean {
+  return snapshot.photos.every(media => media.kind === 'image');
+}
 
-  const path = document.createElementNS(SVG_NAMESPACE, 'path');
-  path.setAttribute('d', 'M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3');
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '2');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.append(path);
-  return svg;
+function bulkLabel(snapshot: PostSnapshot): string {
+  const expected = snapshot.expectedPhotoCount;
+  if (expected === null) return photoOnly(snapshot) ? '전체 사진 수 확인 중' : '전체 미디어 수 확인 중';
+  if (expected === 1 && snapshot.photos[0]?.kind !== 'image') return `${mediaLabel(snapshot.photos[0]!)} 저장`;
+  return `${expected}${photoOnly(snapshot) ? '장' : '개'} 모두 저장`;
+}
+
+function updateIcon(button: HTMLButtonElement, saved: boolean): void {
+  const state = saved ? 'saved' : 'download';
+  if (button.dataset.downloadState === state) return;
+  button.dataset.downloadState = state;
+  const oldIcon = button.querySelector('svg');
+  const icon = makeDownloadIcon(button.ownerDocument, 20, saved);
+  if (oldIcon) oldIcon.replaceWith(icon);
+  else button.prepend(icon);
 }
 
 function makeButton(document: Document, kind: string): HTMLButtonElement {
@@ -115,9 +122,9 @@ export function createPostControls(
     if (!mount) continue;
     positionStaticPhotoMount(document, mount, cleanup);
     const button = makeButton(document, 'photo');
-    button.append(makeDownloadIcon(document, 16));
-    button.setAttribute('aria-label', `사진 ${photo.index} 저장`);
-    button.title = `사진 ${photo.index} 저장`;
+    button.append(makeDownloadIcon(document, 20));
+    button.setAttribute('aria-label', `${mediaLabel(photo)} 저장`);
+    button.title = `${mediaLabel(photo)} 저장`;
     addClickGuard(button, event => handlers.onSavePhoto(photo.key, event), cleanup);
     mount.append(button);
     photoButtons.set(photo.key, button);
@@ -125,18 +132,19 @@ export function createPostControls(
 
   const expected = snapshot.expectedPhotoCount;
   const shouldShowBulk = expected !== null
-    ? expected >= 2 || snapshot.photos.length > 1
+    ? expected >= 2 || snapshot.photos.length > 1 || !photoOnly(snapshot)
     : snapshot.photos.length > 1;
   let bulkButton: HTMLButtonElement | null = null;
   if (shouldShowBulk && mounts.bulkMount) {
-    const knownMultiPhotoTotal = expected !== null && expected >= 2;
-    const buttonLabel = knownMultiPhotoTotal ? `${expected}장 모두 저장` : '전체 사진 수 확인 중';
+    const knownMultiPhotoTotal = expected !== null && expected >= 1;
+    const buttonLabel = bulkLabel(snapshot);
     bulkButton = makeButton(document, 'bulk');
-    bulkButton.append(makeDownloadIcon(document, 18));
+    bulkButton.append(makeDownloadIcon(document, 20));
     const count = document.createElement('span');
     count.className = 'x-download-bulk-count';
     count.setAttribute('data-x-download-count', '');
     count.textContent = knownMultiPhotoTotal ? String(expected) : '…';
+    count.hidden = expected === 1;
     bulkButton.append(count);
     bulkButton.setAttribute('aria-label', buttonLabel);
     bulkButton.title = knownMultiPhotoTotal ? buttonLabel : '전체 사진 목록을 확인한 뒤 저장할 수 있어요.';
@@ -166,25 +174,31 @@ export function createPostControls(
   };
 }
 
-function jobStatusText(job: DownloadJob): string {
+function jobStatusText(job: DownloadJob, snapshot: PostSnapshot): string {
   const total = job.items.length;
   const complete = job.items.filter(item => item.state === 'complete').length;
   const failedItems = job.items.filter(item => item.state === 'failed');
   const failed = failedItems.length;
   const firstError = failedItems.find(item => item.error)?.error;
+  const noun = photoOnly(snapshot) ? '사진' : '미디어';
+  const unit = photoOnly(snapshot) ? '장' : '개';
+  const converting = job.items.filter(item => item.state === 'converting');
   let summary: string;
-  if (job.state === 'starting') {
+  if (converting.length > 0) {
+    const progress = converting[0]?.progress;
+    summary = `GIF 변환 중${progress === undefined ? '' : `: ${Math.round(progress)}%`}${total > 1 ? ` · ${complete}/${total}개 저장 완료` : ''}`;
+  } else if (job.state === 'starting') {
     summary = failed > 0
-      ? `저장 요청 중: ${complete}장 완료, ${failed}장 실패${firstError ? ` — ${firstError}` : ''}`
+      ? `저장 요청 중: ${complete}${unit} 완료, ${failed}${unit} 실패${firstError ? ` — ${firstError}` : ''}`
       : '저장 요청을 준비하고 있어요.';
   } else if (job.state === 'in_progress') {
-    summary = `사진 저장 중: ${complete + failed}/${total}장 처리${failed > 0 ? `, ${failed}장 실패` : ''}${firstError ? ` — ${firstError}` : ''}`;
+    summary = `${noun} 저장 중: ${complete + failed}/${total}${unit} 처리${failed > 0 ? `, ${failed}${unit} 실패` : ''}${firstError ? ` — ${firstError}` : ''}`;
   } else if (job.state === 'complete') {
-    summary = `사진 저장 완료 (${complete}/${total}장)`;
+    summary = `${noun} 저장 완료 (${complete}/${total}${unit})`;
   } else if (job.state === 'partial') {
-    summary = `일부 사진 저장 실패 (${complete}장 완료, ${failed}장 실패)${firstError ? ` — ${firstError}` : ''}`;
+    summary = `일부 ${noun} 저장 실패 (${complete}${unit} 완료, ${failed}${unit} 실패)${firstError ? ` — ${firstError}` : ''}`;
   } else {
-    summary = `사진 저장 실패${firstError ? ` — ${firstError}` : ''}`;
+    summary = `${noun} 저장 실패${firstError ? ` — ${firstError}` : ''}`;
   }
 
   const warnings = job.warnings.filter(warning => warning.trim().length > 0);
@@ -208,38 +222,47 @@ export function renderPostControls(
     const button = controls.photoButtons.get(photo.key);
     if (!button) continue;
     button.disabled = Boolean(busy);
-    button.setAttribute('aria-label', `사진 ${photo.index} 저장`);
+    const saved = state.savedPhotoKeys?.has(photo.key) ?? false;
+    const label = mediaLabel(photo);
+    button.setAttribute('aria-label', saved ? `이미 저장한 ${label} · 다시 저장` : `${label} 저장`);
+    updateIcon(button, saved);
     const item = state.job?.items.find(candidate => candidate.photoKey === photo.key);
     button.title = item?.state === 'failed' && item.error
-      ? `사진 ${photo.index} 저장 실패: ${item.error}`
-      : item?.state === 'complete' ? `사진 ${photo.index} 저장 완료` : `사진 ${photo.index} 저장`;
+      ? `${label} 저장 실패: ${item.error}`
+      : saved ? `이미 저장한 ${label} · 다시 저장` : `${label} 저장`;
   }
 
   if (controls.bulkButton) {
     const expected = snapshot.expectedPhotoCount;
     const totalIsKnownAndComplete = expected !== null
-      && expected >= 2
+      && (expected >= 2 || !photoOnly(snapshot))
       && snapshot.completeness === 'complete'
       && expected === snapshot.photos.length;
-    const label = expected !== null && expected >= 2
-      ? `${expected}장 모두 저장`
-      : '전체 사진 수 확인 중';
+    const savedCount = snapshot.photos.filter(media => state.savedPhotoKeys?.has(media.key)).length;
+    const allSaved = totalIsKnownAndComplete && savedCount === expected;
+    const label = bulkLabel(snapshot);
     const count = controls.bulkButton.querySelector<HTMLElement>('[data-x-download-count]');
-    if (count) count.textContent = expected !== null && expected >= 2 ? String(expected) : '…';
-    controls.bulkButton.setAttribute('aria-label', label);
+    if (count) {
+      count.textContent = expected !== null && expected >= 1 ? String(expected) : '…';
+      count.hidden = expected === 1;
+    }
+    updateIcon(controls.bulkButton, allSaved);
+    controls.bulkButton.setAttribute('aria-label', allSaved ? `모두 저장한 미디어 · ${label}` : label);
     controls.bulkButton.disabled = Boolean(busy) || !totalIsKnownAndComplete;
-    controls.bulkButton.title = totalIsKnownAndComplete ? label : '전체 사진 목록을 확인한 뒤 저장할 수 있어요.';
+    controls.bulkButton.title = totalIsKnownAndComplete
+      ? allSaved ? `모두 저장한 미디어 · ${label}` : savedCount > 0 ? `${savedCount}/${expected}개 저장함 · ${label}` : label
+      : photoOnly(snapshot) ? '전체 사진 목록을 확인한 뒤 저장할 수 있어요.' : '전체 미디어의 MP4 주소를 확인하지 못했어요. 확인된 항목은 개별 저장할 수 있어요.';
   }
 
   if (state.error) {
     controls.status.hidden = false;
-    controls.status.textContent = `사진 저장을 시작하지 못했어요: ${state.error}`;
+    controls.status.textContent = `${photoOnly(snapshot) ? '사진' : '미디어'} 저장을 시작하지 못했어요: ${state.error}`;
   } else if (state.requestPending) {
     controls.status.hidden = false;
     controls.status.textContent = '저장 요청을 보내고 있어요.';
-  } else if (state.job) {
+  } else if (state.job && !(state.job.state === 'complete' && state.hideCompletedStatus)) {
     controls.status.hidden = false;
-    controls.status.textContent = jobStatusText(state.job);
+    controls.status.textContent = jobStatusText(state.job, snapshot);
   } else {
     controls.status.hidden = true;
     controls.status.textContent = '';

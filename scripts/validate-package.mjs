@@ -9,7 +9,14 @@ export async function validatePackage(directory, manifest) {
     manifest.action.default_popup,
     ...Object.values(manifest.icons ?? {}),
     ...Object.values(manifest.action.default_icon ?? {}),
-    ...(manifest.content_scripts ?? []).flatMap(script => [...script.js, ...script.css]),
+    ...(manifest.content_scripts ?? []).flatMap(script => [...(script.js ?? []), ...(script.css ?? [])]),
+    'THIRD_PARTY_NOTICES.txt',
+    'licenses/material-symbols-Apache-2.0.txt',
+    'licenses/mp4box-BSD-3-Clause.txt',
+    'licenses/gifenc-MIT.txt',
+    'offscreen/index.html',
+    'offscreen/index.js',
+    'conversion/gif-worker.js',
   ]);
   for (const relative of files) {
     if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
@@ -30,7 +37,15 @@ export async function validatePackage(directory, manifest) {
     if (!target.startsWith(path.resolve(directory) + path.sep)) throw new Error('Popup reference escapes package.');
     if (!(await stat(target)).isFile()) throw new Error(`Missing popup resource: ${relative}`);
   }
-  if (JSON.stringify(manifest.permissions) !== JSON.stringify(['downloads', 'storage'])) {
-    throw new Error('Unexpected permissions in static-image PoC.');
+  if (JSON.stringify(manifest.permissions) !== JSON.stringify(['downloads', 'storage', 'offscreen'])) {
+    throw new Error('Unexpected permissions in media-download PoC.');
+  }
+  if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(['https://video.twimg.com/*'])) {
+    throw new Error('GIF conversion must request only the exact X video host.');
+  }
+  const mainScript = manifest.content_scripts.find(script => script.world === 'MAIN');
+  if (!mainScript || mainScript.run_at !== 'document_start'
+    || JSON.stringify(mainScript.matches) !== JSON.stringify(['https://x.com/*'])) {
+    throw new Error('The media bridge must run early and only on x.com.');
   }
 }

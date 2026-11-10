@@ -20,4 +20,33 @@ describe('settings persistence', () => {
     vi.stubGlobal('chrome', { storage: { local: { get: async () => ({ [SETTINGS_KEY]: { ...DEFAULT_SETTINGS, subdirectory: '..' } }) } } });
     await expect(loadSettings()).rejects.toThrow();
   });
+
+  it('migrates only a missing GIF output field and preserves existing settings', async () => {
+    const legacySettings = {
+      version: 1,
+      subdirectory: 'archive',
+      grouping: 'author',
+      filename: 'post',
+      originalSize: false,
+    };
+    const data: Record<string, unknown> = { [SETTINGS_KEY]: legacySettings };
+    const set = vi.fn(async (value: Record<string, unknown>) => { Object.assign(data, value); });
+    vi.stubGlobal('chrome', { storage: { local: { get: async () => data, set } } });
+
+    expect(await loadSettings()).toEqual({ ...legacySettings, saveGifAsGif: true });
+    expect(data[SETTINGS_KEY]).toEqual(legacySettings);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicit GIF MP4 preference through save and reload', async () => {
+    const data: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', { storage: { local: {
+      get: async () => data,
+      set: async (value: Record<string, unknown>) => { Object.assign(data, value); },
+    } } });
+
+    const saved = await saveSettings({ ...DEFAULT_SETTINGS, saveGifAsGif: false, subdirectory: 'archive' });
+    expect(saved.saveGifAsGif).toBe(false);
+    expect(await loadSettings()).toEqual(saved);
+  });
 });

@@ -18,7 +18,23 @@ describe('extension boundary', () => {
     expect(isExtensionRequest(structuredClone(request))).toBe(true);
     expect(isExtensionRequest({ ...request, selection: { photoKeys: ['second-media'] } })).toBe(true);
   });
-  it('rejects unimplemented media and duplicate attachment identities', () => {
+  it('accepts direct MP4 media when kind and extension agree', () => {
+    const photo = request.post.photos[0]!;
+    for (const kind of ['video', 'animated_gif'] as const) {
+      expect(isExtensionRequest({
+        ...request,
+        post: { ...request.post, photos: [{
+          ...photo,
+          kind,
+          extension: 'mp4',
+          displayedUrl: 'https://video.twimg.com/tweet_video/clip.mp4',
+          originalFilename: 'clip.mp4',
+          originalUrl: null,
+        }] },
+      })).toBe(true);
+    }
+  });
+  it('rejects kind-extension mismatches and duplicate attachment identities', () => {
     const video = structuredClone(request);
     (video.post.photos[0] as { kind: string }).kind = 'video';
     expect(isExtensionRequest(video)).toBe(false);

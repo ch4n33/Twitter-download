@@ -83,6 +83,7 @@ const SETTINGS: Settings = {
   grouping: 'author',
   filename: 'post',
   originalSize: true,
+  saveGifAsGif: true,
 };
 
 describe('X photo DOM to background download flow', () => {

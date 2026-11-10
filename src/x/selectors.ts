@@ -2,6 +2,8 @@ export const X_SELECTORS = {
   post: 'article[data-testid="tweet"]',
   quote: '[data-testid="quoteTweet"], [data-testid="quotedTweet"], [data-testid="quotedTweetContainer"]',
   photo: '[data-testid="tweetPhoto"]',
+  videoMount: '[data-testid="videoPlayer"], [data-testid="videoComponent"], [data-testid="animatedGif"], [data-testid="gifPlayer"]',
+  videoElement: 'video',
   tweetText: '[data-testid="tweetText"]',
   userName: '[data-testid="User-Name"]',
   reply: '[data-testid="reply"]',

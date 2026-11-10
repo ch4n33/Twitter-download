@@ -19,6 +19,12 @@ export interface PostMutationObserverOptions {
 export class PostMutationObserver {
   private readonly knownPosts = new Set<HTMLElement>();
   private observer: MutationObserver | null = null;
+  private readonly onMediaLoaded = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const post = findOwningPost(target);
+    if (post) this.options.onPostChanged(post);
+  };
 
   constructor(private readonly options: PostMutationObserverOptions) {}
 
@@ -29,6 +35,7 @@ export class PostMutationObserver {
     const MutationObserverConstructor = this.options.document.defaultView?.MutationObserver
       ?? globalThis.MutationObserver;
     if (!MutationObserverConstructor) return;
+    this.options.document.addEventListener('loadedmetadata', this.onMediaLoaded, true);
     this.observer = new MutationObserverConstructor(records => this.onMutations(records));
     this.observer.observe(root, {
       subtree: true,
@@ -44,6 +51,7 @@ export class PostMutationObserver {
   }
 
   stop(): void {
+    this.options.document.removeEventListener('loadedmetadata', this.onMediaLoaded, true);
     this.observer?.disconnect();
     this.observer = null;
     for (const post of this.knownPosts) this.options.onPostRemoved(post);

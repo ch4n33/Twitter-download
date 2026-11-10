@@ -1,6 +1,6 @@
 import type {
   DownloadJob, DownloadStartRequest, DownloadStatusMessage, ExtensionRequest,
-  ExtensionResponse, PhotoAsset, PostSnapshot,
+  ExtensionResponse, MediaAsset, PostSnapshot,
 } from '../core/types';
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -12,18 +12,22 @@ function text(value: unknown, max = 2048): value is string {
 function nullableText(value: unknown, max: number): boolean {
   return value === null || text(value, max);
 }
-function isPhoto(value: unknown): value is PhotoAsset {
+function isMedia(value: unknown): value is MediaAsset {
   if (!record(value)) return false;
-  return value.kind === 'image' && text(value.key) && Number.isInteger(value.index)
+  const image = value.kind === 'image';
+  const video = value.kind === 'video' || value.kind === 'animated_gif';
+  const validExtension = image
+    ? ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(String(value.extension))
+    : video && value.extension === 'mp4';
+  return (image || video) && validExtension && text(value.key) && Number.isInteger(value.index)
     && Number(value.index) >= 1 && Number(value.index) <= 100
     && nullableText(value.originalFilename, 240)
-    && ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(String(value.extension))
     && text(value.displayedUrl, 8192) && nullableText(value.originalUrl, 8192);
 }
 function isPost(value: unknown): value is PostSnapshot {
   if (!record(value) || !text(value.key) || !nullableText(value.postId, 40)
     || !nullableText(value.authorHandle, 64) || !Array.isArray(value.photos)
-    || value.photos.length < 1 || value.photos.length > 100 || !value.photos.every(isPhoto)
+    || value.photos.length < 1 || value.photos.length > 100 || !value.photos.every(isMedia)
     || !['complete', 'partial', 'unknown'].includes(String(value.completeness))) return false;
   const total = value.expectedPhotoCount;
   if (total !== null && (!Number.isInteger(total) || Number(total) < 1 || Number(total) > 100)) return false;
@@ -53,8 +57,12 @@ export function isDownloadStatusMessage(value: unknown): value is DownloadStatus
     && Array.isArray(job.warnings) && job.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(job.items) && job.items.length > 0 && job.items.length <= 100
     && job.items.every(item => record(item) && text(item.photoKey) && Number.isInteger(item.index)
+      && (item.expectedKind === undefined || ['image', 'video', 'animated_gif'].includes(String(item.expectedKind)))
+      && (item.outputFormat === undefined || ['jpg', 'jpeg', 'png', 'webp', 'avif', 'mp4', 'gif'].includes(String(item.outputFormat)))
       && text(item.relativePath) && (item.downloadId === null || Number.isInteger(item.downloadId))
-      && ['starting', 'in_progress', 'complete', 'failed'].includes(String(item.state))
+      && ['starting', 'converting', 'in_progress', 'complete', 'failed'].includes(String(item.state))
+      && (item.progress === undefined || (typeof item.progress === 'number' && Number.isFinite(item.progress)
+        && item.progress >= 0 && item.progress <= 100))
       && (item.error === null || typeof item.error === 'string'));
 }
 

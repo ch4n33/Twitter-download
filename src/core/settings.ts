@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   grouping: 'none',
   filename: 'original',
   originalSize: true,
+  saveGifAsGif: true,
 });
 
 function failure<T>(code: string, message: string): Result<T> {
@@ -72,6 +73,15 @@ export function validateSettings(value: unknown): Result<Settings> {
     return failure('invalid_image_size', '이미지 크기 설정을 확인해 주세요.');
   }
 
+  // This field was added to the v1 settings shape. Treat only its absence as
+  // the old default; a present but malformed value is still corrupt data.
+  const saveGifAsGif = Object.prototype.hasOwnProperty.call(value, 'saveGifAsGif')
+    ? value.saveGifAsGif
+    : true;
+  if (typeof saveGifAsGif !== 'boolean') {
+    return failure('invalid_gif_output', 'GIF 저장 형식 설정을 확인해 주세요.');
+  }
+
   return {
     ok: true,
     value: {
@@ -80,6 +90,7 @@ export function validateSettings(value: unknown): Result<Settings> {
       grouping: value.grouping,
       filename: value.filename,
       originalSize: value.originalSize,
+      saveGifAsGif,
     },
   };
 }

@@ -1,4 +1,5 @@
 import { createDownloadPlan } from '../core/download-plan';
+import type { GifConverter } from '../conversion/protocol';
 import type {
   AppError,
   DownloadJob,
@@ -8,6 +9,7 @@ import type {
   DownloadStartRequest,
   ExtensionRequest,
   ExtensionResponse,
+  MediaKind,
   PhotoAsset,
   Result,
   Settings,
@@ -16,7 +18,7 @@ import type {
 } from '../core/types';
 import { isExtensionRequest } from '../platform/messaging';
 import { loadSettings } from '../platform/settings-store';
-import { isAllowedImageUrl } from '../x/media-urls';
+import { isAllowedImageUrl, isAllowedVideoUrl } from '../x/media-urls';
 import { DownloadJobStore, type SessionJobStorage } from './job-store';
 
 const STATIC_IMAGE_MIMES = new Set([
@@ -27,6 +29,8 @@ const STATIC_IMAGE_MIMES = new Set([
   'image/webp',
   'image/avif',
 ]);
+const VIDEO_MIMES = new Set(['video/mp4', 'application/mp4']);
+const GIF_MIMES = new Set(['image/gif']);
 
 const INVALID_REQUEST: AppError = {
   code: 'invalid_request',
@@ -52,7 +56,8 @@ export interface DownloadServiceOptions {
     settings: Settings,
     context: { now: Date },
   ) => Result<DownloadPlan>;
-  isAllowedUrl?: (value: string) => boolean;
+  isAllowedUrl?: (value: string, kind: MediaKind) => boolean;
+  converter?: GifConverter;
   now?: () => Date;
   createId?: () => string;
   notify?: (job: DownloadJob) => void | Promise<void>;
@@ -109,11 +114,14 @@ function selectedPhotos(request: DownloadStartRequest): PhotoAsset[] {
   return request.post.photos.filter(photo => wanted.has(photo.key));
 }
 
-function mediaTypeError(mime: string): string | null {
+function mediaTypeError(mime: string, kind: MediaKind, outputFormat?: DownloadJobItem['outputFormat']): string | null {
   const normalized = mime.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-  return STATIC_IMAGE_MIMES.has(normalized)
-    ? null
-    : `The browser reported “${normalized || mime}”; this is not a supported static image.`;
+  const expectedMimes = outputFormat === 'gif'
+    ? GIF_MIMES
+    : kind === 'image' ? STATIC_IMAGE_MIMES : VIDEO_MIMES;
+  if (expectedMimes.has(normalized)) return null;
+  const expectedDescription = outputFormat === 'gif' ? 'GIF image' : kind === 'image' ? 'static image' : 'MP4 video';
+  return `The browser reported “${normalized || mime}”; this is not a supported ${expectedDescription}.`;
 }
 
 function computeJobState(items: DownloadJobItem[]): DownloadJob['state'] {
@@ -121,7 +129,7 @@ function computeJobState(items: DownloadJobItem[]): DownloadJob['state'] {
   if (items.every(item => item.state === 'failed')) return 'failed';
   const allTerminal = items.every(item => item.state === 'complete' || item.state === 'failed');
   if (allTerminal) return 'partial';
-  if (items.some(item => item.state === 'in_progress')) return 'in_progress';
+  if (items.some(item => item.state === 'in_progress' || item.state === 'converting')) return 'in_progress';
   return 'starting';
 }
 
@@ -150,7 +158,8 @@ function applyNativeResult(item: DownloadJobItem, result: TransportDownload): Do
       error: result.error || 'The browser interrupted this download.',
     };
   }
-  const mimeError = result.mime ? mediaTypeError(result.mime) : null;
+  // Older browsers can omit the response MIME. Preserve the prior behavior in that case.
+  const mimeError = result.mime ? mediaTypeError(result.mime, item.expectedKind ?? 'image', item.outputFormat) : null;
   return mimeError
     ? { ...item, state: 'failed', error: mimeError }
     : { ...item, state: 'complete', error: null };
@@ -164,7 +173,7 @@ export class BackgroundDownloadService {
   private readonly store: DownloadJobStore;
   private readonly settingsLoader: () => Promise<Settings>;
   private readonly planFactory: NonNullable<DownloadServiceOptions['makePlan']>;
-  private readonly urlValidator: (value: string) => boolean;
+  private readonly urlValidator: (value: string, kind: MediaKind) => boolean;
   private readonly clock: () => Date;
   private readonly idFactory: () => string;
   private readonly notifier: (job: DownloadJob) => void | Promise<void>;
@@ -174,7 +183,9 @@ export class BackgroundDownloadService {
     this.store = new DownloadJobStore(options.storage, () => this.clock().getTime());
     this.settingsLoader = options.loadSettings ?? loadSettings;
     this.planFactory = options.makePlan ?? createDownloadPlan;
-    this.urlValidator = options.isAllowedUrl ?? isAllowedImageUrl;
+    this.urlValidator = options.isAllowedUrl ?? ((value, kind) => (
+      kind === 'image' ? isAllowedImageUrl(value) : isAllowedVideoUrl(value)
+    ));
     this.clock = options.now ?? (() => new Date());
     this.idFactory = options.createId ?? (() => crypto.randomUUID());
     this.notifier = options.notify ?? (() => undefined);
@@ -192,6 +203,11 @@ export class BackgroundDownloadService {
     } catch (cause) {
       return error('background_error', errorMessage(cause, 'The background download service failed.'));
     }
+  }
+
+  /** Called after event listeners are registered in the MV3 service worker. */
+  async restore(): Promise<void> {
+    await this.ensureRestored();
   }
 
   async handleTransportChange(change: TransportChange): Promise<void> {
@@ -218,7 +234,12 @@ export class BackgroundDownloadService {
         return;
       }
     }
-    if (result) await this.applyResult(found.job.id, found.item.photoKey, result);
+    if (result) {
+      await this.applyResult(found.job.id, found.item.photoKey, result);
+      if (result.state === 'complete' || result.state === 'interrupted') {
+        await this.releaseConvertedItem(found.job.id, found.item);
+      }
+    }
   }
 
   private async getStatus(jobId: string, context: SenderContext): Promise<ExtensionResponse> {
@@ -238,10 +259,12 @@ export class BackgroundDownloadService {
     }
 
     for (const photo of selectedPhotos(request)) {
-      if (!this.urlValidator(photo.displayedUrl)) {
-        return error('unsupported_media_url', `The displayed image URL for photo ${photo.index} is not supported.`);
+      if (!this.urlValidator(photo.displayedUrl, photo.kind)) {
+        const label = photo.kind === 'image' ? 'displayed image URL for photo' : 'displayed media URL for item';
+        return error('unsupported_media_url', `The ${label} ${photo.index} is not supported.`);
       }
-      if (settings.originalSize && photo.originalUrl && !this.urlValidator(photo.originalUrl)) {
+      if (photo.kind === 'image' && settings.originalSize && photo.originalUrl
+        && !this.urlValidator(photo.originalUrl, photo.kind)) {
         return error('unsupported_media_url', `The original image URL for photo ${photo.index} is not supported.`);
       }
     }
@@ -257,8 +280,9 @@ export class BackgroundDownloadService {
     const plan = planResult.value;
     if (plan.tasks.length === 0) return error('empty_plan', 'The selected images produced no download tasks.');
     for (const task of plan.tasks) {
-      if (!this.urlValidator(task.url)) {
-        return error('unsupported_media_url', `The planned image URL for photo ${task.index} is not supported.`);
+      if (!this.urlValidator(task.url, task.kind)) {
+        const label = task.kind === 'image' ? 'planned image URL for photo' : 'planned media URL for item';
+        return error('unsupported_media_url', `The ${label} ${task.index} is not supported.`);
       }
     }
 
@@ -270,15 +294,21 @@ export class BackgroundDownloadService {
       frameId: context.frameId,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
-      state: 'starting',
-      items: plan.tasks.map(task => ({
-        photoKey: task.photoKey,
-        index: task.index,
-        relativePath: task.relativePath,
-        downloadId: null,
-        state: 'starting',
-        error: null,
-      })),
+      state: plan.tasks.some(task => task.transform === 'mp4-to-gif') ? 'in_progress' : 'starting',
+      items: plan.tasks.map(task => {
+        const outputFormat = task.outputFormat ?? (task.transform === 'mp4-to-gif' ? 'gif' : undefined);
+        return {
+          photoKey: task.photoKey,
+          index: task.index,
+          expectedKind: task.kind,
+          ...(outputFormat ? { outputFormat } : {}),
+          relativePath: task.relativePath,
+          downloadId: null,
+          state: task.transform === 'mp4-to-gif' ? 'converting' as const : 'starting' as const,
+          ...(task.transform === 'mp4-to-gif' ? { progress: 0 } : {}),
+          error: null,
+        };
+      }),
       warnings: [...plan.warnings],
     };
 
@@ -289,6 +319,16 @@ export class BackgroundDownloadService {
     }
     await this.notify(created.job);
 
+    if (plan.tasks.some(task => task.transform === 'mp4-to-gif')) {
+      for (const [index, task] of plan.tasks.entries()) {
+        void this.startTask(created.job.id, index, task).catch(cause => (
+          this.failUnexpectedStart(created.job.id, index, task, cause)
+        ));
+      }
+      const latest = await this.store.get(created.job.id);
+      return latest ? { ok: true, job: latest } : error('job_lost', 'The download job state could not be recovered.');
+    }
+
     await Promise.all(plan.tasks.map((task, index) => this.startTask(created.job.id, index, task)));
     const latest = await this.store.get(created.job.id);
     return latest ? { ok: true, job: latest } : error('job_lost', 'The download job state could not be recovered.');
@@ -298,13 +338,46 @@ export class BackgroundDownloadService {
     jobId: string,
     itemIndex: number,
     task: DownloadPlan['tasks'][number],
+    reconnect = false,
   ): Promise<void> {
+    let downloadUrl = task.url;
+    const conversionId = task.transform === 'mp4-to-gif' ? this.conversionId(jobId, itemIndex) : null;
+    if (conversionId) {
+      const converter = this.options.converter;
+      if (!converter) {
+        await this.failGifConversion(jobId, itemIndex, new Error('GIF conversion is unavailable.'));
+        return;
+      }
+      try {
+        const prepared = reconnect
+          ? await converter.reconnect(conversionId, progress => this.reportProgress(jobId, itemIndex, progress))
+          : await converter.prepare(conversionId, task.url, progress => this.reportProgress(jobId, itemIndex, progress));
+        downloadUrl = prepared.url;
+      } catch (cause) {
+        await this.failGifConversion(jobId, itemIndex, cause);
+        await this.safeRelease(converter, conversionId);
+        return;
+      }
+
+      const current = await this.store.get(jobId);
+      const item = current?.items[itemIndex];
+      if (!item || isItemTerminal(item)) {
+        await this.safeRelease(converter, conversionId);
+        return;
+      }
+      await this.updateItem(jobId, itemIndex, value => {
+        const { progress: _progress, ...rest } = value;
+        return { ...rest, state: 'starting', error: null };
+      });
+    }
+
     let downloadId: number;
     try {
-      downloadId = await this.options.transport.start(task);
+      downloadId = await this.options.transport.start({ url: downloadUrl, relativePath: task.relativePath });
     } catch (cause) {
       const message = errorMessage(cause, 'The browser rejected this download.');
       await this.updateItem(jobId, itemIndex, item => ({ ...item, state: 'failed', error: message }));
+      if (conversionId && this.options.converter) await this.safeRelease(this.options.converter, conversionId);
       return;
     }
 
@@ -320,10 +393,77 @@ export class BackgroundDownloadService {
     // Querying after persistence closes that event race without restarting it.
     try {
       const current = await this.options.transport.get(downloadId);
-      if (current) await this.applyResult(jobId, task.photoKey, current);
+      if (current) {
+        await this.applyResult(jobId, task.photoKey, current);
+        if (current.state === 'complete' || current.state === 'interrupted') {
+          const latest = await this.store.get(jobId);
+          const item = latest?.items[itemIndex];
+          if (item) await this.releaseConvertedItem(jobId, item);
+        }
+      }
     } catch {
       // The accepted download remains in progress; a later native event can resolve it.
     }
+  }
+
+  private conversionId(jobId: string, itemIndex: number): string {
+    return `gif-${jobId}-${itemIndex}`;
+  }
+
+  private async handleProgress(jobId: string, itemIndex: number, percent: number): Promise<void> {
+    if (!Number.isFinite(percent)) return;
+    const progress = Math.max(0, Math.min(100, Math.round(percent)));
+    await this.updateItem(jobId, itemIndex, item => (
+      item.state !== 'converting' || item.progress === progress
+        ? item
+        : { ...item, progress, error: null }
+    ));
+  }
+
+  private reportProgress(jobId: string, itemIndex: number, percent: number): void {
+    void this.handleProgress(jobId, itemIndex, percent).catch(() => undefined);
+  }
+
+  private async failGifConversion(jobId: string, itemIndex: number, cause: unknown): Promise<void> {
+    const detail = errorMessage(cause, 'The source media could not be converted to GIF.');
+    await this.updateItem(jobId, itemIndex, item => ({
+      ...item,
+      state: 'failed',
+      error: `${detail} GIF 저장 옵션을 끄면 MP4로 저장할 수 있어요.`,
+    }));
+  }
+
+  private async failUnexpectedStart(
+    jobId: string,
+    itemIndex: number,
+    task: DownloadPlan['tasks'][number],
+    cause: unknown,
+  ): Promise<void> {
+    if (task.transform === 'mp4-to-gif') {
+      await this.failGifConversion(jobId, itemIndex, cause);
+      if (this.options.converter) await this.safeRelease(this.options.converter, this.conversionId(jobId, itemIndex));
+      return;
+    }
+    await this.updateItem(jobId, itemIndex, item => ({
+      ...item,
+      state: 'failed',
+      error: errorMessage(cause, 'The browser rejected this download.'),
+    }));
+  }
+
+  private async safeRelease(converter: GifConverter, id: string): Promise<void> {
+    try {
+      await converter.release(id);
+    } catch {
+      // Cleanup must not change a native download result.
+    }
+  }
+
+  private async releaseConvertedItem(jobId: string, item: DownloadJobItem): Promise<void> {
+    if (item.outputFormat !== 'gif' || !this.options.converter) return;
+    const items = (await this.store.get(jobId))?.items ?? [];
+    const index = items.findIndex(candidate => candidate.photoKey === item.photoKey);
+    if (index >= 0) await this.safeRelease(this.options.converter, this.conversionId(jobId, index));
   }
 
   private async updateItem(
@@ -384,6 +524,22 @@ export class BackgroundDownloadService {
       for (let index = 0; index < job.items.length; index += 1) {
         const item = job.items[index]!;
         if (isItemTerminal(item)) continue;
+        if (item.state === 'converting') {
+          const task = {
+            photoKey: item.photoKey,
+            index: item.index,
+            kind: item.expectedKind ?? 'animated_gif',
+            extension: 'mp4',
+            url: '',
+            relativePath: item.relativePath,
+            outputFormat: item.outputFormat ?? 'gif',
+            transform: 'mp4-to-gif',
+          } satisfies DownloadPlan['tasks'][number];
+          void this.startTask(job.id, index, task, true).catch(cause => (
+            this.failUnexpectedStart(job.id, index, task, cause)
+          ));
+          continue;
+        }
         if (item.downloadId === null) {
           await this.updateItem(job.id, index, current => ({
             ...current,
@@ -396,12 +552,16 @@ export class BackgroundDownloadService {
           const current = await this.options.transport.get(item.downloadId);
           if (current) {
             await this.applyResult(job.id, item.photoKey, current);
+            if (current.state === 'complete' || current.state === 'interrupted') {
+              await this.releaseConvertedItem(job.id, item);
+            }
           } else {
             await this.updateItem(job.id, index, itemValue => ({
               ...itemValue,
               state: 'failed',
               error: 'The browser no longer has this download; it was not restarted.',
             }));
+            await this.releaseConvertedItem(job.id, item);
           }
         } catch {
           // Keep a known ID in progress if a temporary lookup error prevents restoration.

@@ -56,6 +56,7 @@ describe('settings popup', () => {
       grouping: 'author',
       filename: 'post',
       originalSize: false,
+      saveGifAsGif: true,
     };
     await mountPopup(saved);
 
@@ -63,6 +64,8 @@ describe('settings popup', () => {
     expect(input('group-author').checked).toBe(true);
     expect(input('filename-post').checked).toBe(true);
     expect(input('original-size').checked).toBe(false);
+    expect(input('save-gif').checked).toBe(true);
+    expect(text('gif-output-help').textContent).toBe('끄면 MP4로 저장합니다. GIF 변환은 시간이 걸리고 파일이 커질 수 있어요.');
     expect(text('path-preview').textContent).toBe('~/Download/archive/@sample_photo/sample_photo-2118530055324254686-1.jpeg');
     expect(text('quality-preview').textContent).toBe('이미지 크기: 타임라인 표시 크기');
     expect(text('save-status').textContent).toContain('자동 저장');
@@ -80,6 +83,8 @@ describe('settings popup', () => {
     input('filename-post').dispatchEvent(new Event('change', { bubbles: true }));
     input('original-size').checked = false;
     input('original-size').dispatchEvent(new Event('change', { bubbles: true }));
+    input('save-gif').checked = false;
+    input('save-gif').dispatchEvent(new Event('change', { bubbles: true }));
     await flushPopupWork();
 
     expect(text('path-preview').textContent).toMatch(/^~\/Download\/media\/\d{4}-\d{2}-\d{2}\/sample_photo-2118530055324254686-1\.jpeg$/);
@@ -91,8 +96,32 @@ describe('settings popup', () => {
       grouping: 'date',
       filename: 'post',
       originalSize: false,
+      saveGifAsGif: false,
     });
     expect(text('save-status').textContent).toBe('설정이 저장됐어요.');
+  });
+
+  it('autosaves the GIF MP4 preference and restores it with other settings', async () => {
+    const initial: Settings = {
+      ...DEFAULT_SETTINGS,
+      subdirectory: 'archive',
+      filename: 'post',
+      originalSize: false,
+    };
+    await mountPopup(initial);
+
+    input('save-gif').checked = false;
+    input('save-gif').dispatchEvent(new Event('change', { bubbles: true }));
+    await flushPopupWork();
+
+    const saved = settingsStore.saveSettings.mock.calls.at(-1)?.[0] as Settings;
+    expect(saved.saveGifAsGif).toBe(false);
+    expect(saved).toMatchObject({ subdirectory: 'archive', filename: 'post', originalSize: false });
+
+    await mountPopup(saved);
+    expect(input('save-gif').checked).toBe(false);
+    expect(input('subdirectory').value).toBe('archive');
+    expect(input('original-size').checked).toBe(false);
   });
 
   it('shows invalid folder errors and never saves the invalid value', async () => {

@@ -5,9 +5,12 @@ import type {
   PostSnapshot,
   Result,
   Settings,
+  MediaAsset,
   StaticImageExtension,
+  OutputFormat,
 } from './types';
 import { validateFolderName, validateSettings } from './settings';
+import { outputFormatFor } from './output-format';
 
 export { validateFolderName } from './settings';
 
@@ -21,8 +24,24 @@ function success<T>(value: T): Result<T> {
   return { ok: true, value };
 }
 
-function isSupportedExtension(value: unknown): value is StaticImageExtension {
-  return typeof value === 'string' && IMAGE_EXTENSIONS.includes(value as StaticImageExtension);
+function isSupportedFormat(asset: Pick<MediaAsset, 'kind' | 'extension'>): boolean {
+  if (asset.kind === 'image') return IMAGE_EXTENSIONS.includes(asset.extension as StaticImageExtension);
+  return (asset.kind === 'video' || asset.kind === 'animated_gif') && asset.extension === 'mp4';
+}
+
+function formatMismatchError(asset: Pick<MediaAsset, 'kind' | 'extension'>): string {
+  return asset.kind === 'image' ? 'unsupported_image_extension' : 'unsupported_media_extension';
+}
+
+function formatWarning(asset: Pick<MediaAsset, 'kind' | 'extension'>, hasExtension: boolean): string {
+  if (asset.kind === 'image') {
+    return hasExtension
+      ? `확인된 이미지 형식(.${asset.extension})에 맞춰 파일 확장자를 사용합니다.`
+      : `확인된 이미지 형식(.${asset.extension})의 확장자를 파일 이름에 붙였습니다.`;
+  }
+  return hasExtension
+    ? `확인된 미디어 형식(.${asset.extension})에 맞춰 파일 확장자를 사용합니다.`
+    : `확인된 미디어 형식(.${asset.extension})의 확장자를 파일 이름에 붙였습니다.`;
 }
 
 function safeComponent(value: unknown): value is string {
@@ -47,12 +66,14 @@ function localDateFolder(now: Date): Result<string> {
   return success(folder);
 }
 
-function originalFilename(photo: PhotoAsset): Result<{ filename: string; warnings: string[] }> {
+function originalFilename(photo: PhotoAsset, outputFormat: OutputFormat): Result<{ filename: string; warnings: string[] }> {
   if (typeof photo.originalFilename !== 'string' || photo.originalFilename.length === 0) {
     return failure('original_filename_unavailable', '원본 파일 이름을 확인할 수 없어요.');
   }
-  if (!isSupportedExtension(photo.extension)) {
-    return failure('unsupported_image_extension', '지원하지 않는 이미지 형식이에요.');
+  if (!isSupportedFormat(photo)) {
+    return failure(formatMismatchError(photo), photo.kind === 'image'
+      ? '지원하지 않는 이미지 형식이에요.'
+      : '지원하지 않는 미디어 형식이에요.');
   }
 
   const originalName = photo.originalFilename;
@@ -64,7 +85,7 @@ function originalFilename(photo: PhotoAsset): Result<{ filename: string; warning
   const dotIndex = originalName.lastIndexOf('.');
   const hasExtension = dotIndex > 0 && dotIndex < originalName.length - 1;
   const currentExtension = hasExtension ? originalName.slice(dotIndex + 1).toLowerCase() : '';
-  if (currentExtension === photo.extension) {
+  if (currentExtension === outputFormat) {
     return success({ filename: originalName, warnings: [] });
   }
 
@@ -72,28 +93,26 @@ function originalFilename(photo: PhotoAsset): Result<{ filename: string; warning
   if (stem.length === 0) {
     return failure('invalid_original_filename', '원본 파일 이름을 확인할 수 없어요.');
   }
-  const filename = `${stem}.${photo.extension}`;
+  const filename = `${stem}.${outputFormat}`;
   if (!safeComponent(filename)) {
     return failure('invalid_original_filename', '원본 파일 이름을 안전한 경로로 만들 수 없어요.');
   }
 
   return success({
     filename,
-    warnings: [hasExtension
-      ? `확인된 이미지 형식(.${photo.extension})에 맞춰 파일 확장자를 사용합니다.`
-      : `확인된 이미지 형식(.${photo.extension})의 확장자를 파일 이름에 붙였습니다.`],
+    warnings: outputFormat === 'gif' ? [] : [formatWarning(photo, hasExtension)],
   });
 }
 
-function postFilename(post: PostSnapshot, photo: PhotoAsset): Result<{ filename: string; warnings: string[] }> {
+function postFilename(post: PostSnapshot, photo: PhotoAsset, outputFormat: OutputFormat): Result<{ filename: string; warnings: string[] }> {
   const handle = safeHandle(post.authorHandle);
   const postId = safeComponent(post.postId) ? post.postId : null;
-  if (handle !== null && postId !== null && isSupportedExtension(photo.extension)) {
-    const filename = `${handle}-${postId}-${photo.index}.${photo.extension}`;
+  if (handle !== null && postId !== null && isSupportedFormat(photo)) {
+    const filename = `${handle}-${postId}-${photo.index}.${outputFormat}`;
     if (safeComponent(filename)) return success({ filename, warnings: [] });
   }
 
-  const fallback = originalFilename(photo);
+  const fallback = originalFilename(photo, outputFormat);
   if (!fallback.ok) return fallback;
   return success({
     filename: fallback.value.filename,
@@ -113,8 +132,10 @@ function canonicalPhoto(post: PostSnapshot, photo: PhotoAsset): Result<PhotoAsse
     return failure('photo_not_in_post', '선택한 사진이 해당 게시물에 포함되어 있지 않아요.');
   }
   const matched = matches[0];
-  if (!Number.isInteger(matched.index) || matched.index < 1 || !isSupportedExtension(matched.extension)) {
-    return failure('invalid_photo', '사진 순번이나 이미지 형식을 확인해 주세요.');
+  if (!Number.isInteger(matched.index) || matched.index < 1 || !isSupportedFormat(matched)) {
+    return failure('invalid_photo', matched.kind === 'image'
+      ? '사진 순번이나 이미지 형식을 확인해 주세요.'
+      : '미디어 순번이나 형식을 확인해 주세요.');
   }
   return success(matched);
 }
@@ -153,9 +174,10 @@ export function buildRelativePath(
     parts.push(authorFolder);
   }
 
+  const outputFormat = outputFormatFor(canonical, validatedSettings);
   const filename = validatedSettings.filename === 'post'
-    ? postFilename(post, canonical)
-    : originalFilename(canonical);
+    ? postFilename(post, canonical, outputFormat)
+    : originalFilename(canonical, outputFormat);
   if (!filename.ok) return filename;
   parts.push(filename.value.filename);
   warnings.push(...filename.value.warnings);

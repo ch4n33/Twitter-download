@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "X 이미지 저장",
-  "version": "0.1.2",
-  "description": "X 게시물의 정적 이미지를 한 장 또는 전체 저장합니다. 폴더·파일명·원본 크기를 설정할 수 있습니다.",
+  "version": "0.3.0",
+  "description": "X 게시물의 사진과 직접 MP4로 제공되는 GIF·동영상을 저장합니다. 폴더·파일명·사진 원본 크기를 설정할 수 있습니다.",
   "minimum_chrome_version": "123",
-  "permissions": ["downloads", "storage"],
+  "permissions": ["downloads", "storage", "offscreen"],
+  "host_permissions": ["https://video.twimg.com/*"],
   "background": {
     "service_worker": "background/index.js",
     "type": "module"
@@ -21,6 +22,11 @@
     "128": "assets/icons/128.png"
   },
   "content_scripts": [{
+    "matches": ["https://x.com/*"],
+    "js": ["content/page-media.js"],
+    "run_at": "document_start",
+    "world": "MAIN"
+  }, {
     "matches": ["https://x.com/*"],
     "js": ["content/index.js"],
     "css": ["content/content.css"],

@@ -12,6 +12,16 @@ const photo: PhotoAsset = {
   originalUrl: 'https://example.invalid/coast?size=original',
 };
 
+const video: PhotoAsset = {
+  key: 'video-a',
+  kind: 'video',
+  index: 2,
+  originalFilename: 'sample-clip.mp4',
+  extension: 'mp4',
+  displayedUrl: 'https://video.twimg.com/tweet_video/sample-clip.mp4',
+  originalUrl: null,
+};
+
 const post: PostSnapshot = {
   key: 'post-a',
   postId: '9876543210123456789',
@@ -27,6 +37,7 @@ const baseSettings: Settings = {
   grouping: 'none',
   filename: 'original',
   originalSize: true,
+  saveGifAsGif: false,
 };
 
 const context = { now: new Date(2026, 10, 6, 12) };
@@ -52,6 +63,18 @@ describe('validateFolderName', () => {
 });
 
 describe('buildRelativePath', () => {
+  it('uses the chosen GIF output extension for original and generated filenames', () => {
+    const animation: PhotoAsset = { ...video, key: 'animated-8', kind: 'animated_gif' };
+    const animationPost = { ...post, photos: [animation] };
+    const enabled = { ...baseSettings, saveGifAsGif: true };
+    expect(buildRelativePath(animationPost, animation, enabled, context))
+      .toEqual({ ok: true, value: { relativePath: 'sample-clip.gif', warnings: [] } });
+    expect(buildRelativePath(animationPost, animation, { ...enabled, filename: 'post' }, context))
+      .toMatchObject({ ok: true, value: { relativePath: 'trail_maker-9876543210123456789-2.gif' } });
+    expect(buildRelativePath(animationPost, animation, baseSettings, context))
+      .toMatchObject({ ok: true, value: { relativePath: 'sample-clip.mp4' } });
+  });
+
   it('composes manual, generated date, and filename components in order', () => {
     const result = buildRelativePath(post, photo, {
       ...baseSettings,
@@ -109,6 +132,20 @@ describe('buildRelativePath', () => {
         warnings: ['확인된 이미지 형식(.png)에 맞춰 파일 확장자를 사용합니다.'],
       },
     });
+  });
+
+  it('preserves MP4 names for video assets and uses the media extension in generated names', () => {
+    const videoPost = { ...post, photos: [video] };
+    expect(buildRelativePath(videoPost, video, baseSettings, context))
+      .toMatchObject({ ok: true, value: { relativePath: 'sample-clip.mp4', warnings: [] } });
+    expect(buildRelativePath(videoPost, video, { ...baseSettings, filename: 'post' }, context))
+      .toMatchObject({ ok: true, value: { relativePath: 'trail_maker-9876543210123456789-2.mp4' } });
+  });
+
+  it('rejects a media kind paired with the wrong extension', () => {
+    const invalid = { ...video, extension: 'jpg' as const };
+    expect(buildRelativePath({ ...post, photos: [invalid] }, invalid, baseSettings, context))
+      .toMatchObject({ ok: false, error: { code: 'invalid_photo' } });
   });
 
   it('never accepts a photo that is not part of the requested post', () => {

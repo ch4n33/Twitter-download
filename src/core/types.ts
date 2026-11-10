@@ -6,6 +6,9 @@ export interface AppError {
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: AppError };
 export type StaticImageExtension = 'jpg' | 'jpeg' | 'png' | 'webp' | 'avif';
+export type MediaKind = 'image' | 'video' | 'animated_gif';
+export type MediaExtension = StaticImageExtension | 'mp4';
+export type OutputFormat = MediaExtension | 'gif';
 
 export interface Settings {
   version: 1;
@@ -13,18 +16,22 @@ export interface Settings {
   grouping: 'none' | 'date' | 'author';
   filename: 'original' | 'post';
   originalSize: boolean;
+  saveGifAsGif: boolean;
 }
 
-/** Only static images are supported in this PoC; future media kinds can extend this union. */
-export interface PhotoAsset {
+/** The legacy `photos` field carries all downloadable attachments for compatibility. */
+export interface MediaAsset {
   key: string;
-  kind: 'image';
+  kind: MediaKind;
   index: number;
   originalFilename: string | null;
-  extension: StaticImageExtension;
+  extension: MediaExtension;
   displayedUrl: string;
   originalUrl: string | null;
 }
+
+/** Legacy name retained for existing consumers of the photo-oriented contracts. */
+export type PhotoAsset = MediaAsset;
 
 export interface PostSnapshot {
   key: string;
@@ -49,6 +56,11 @@ export interface FileDownload {
 export interface DownloadTask extends FileDownload {
   photoKey: string;
   index: number;
+  kind: MediaKind;
+  extension: MediaExtension;
+  /** Output can differ from the MP4 source for animated GIF attachments. */
+  outputFormat?: OutputFormat;
+  transform?: 'mp4-to-gif';
 }
 
 export interface DownloadPlan {
@@ -80,9 +92,14 @@ export interface DownloadTransport {
 export interface DownloadJobItem {
   photoKey: string;
   index: number;
+  /** Missing only on jobs persisted by older versions; recovery treats those as images. */
+  expectedKind?: MediaKind;
+  outputFormat?: OutputFormat;
   relativePath: string;
   downloadId: number | null;
-  state: 'starting' | 'in_progress' | 'complete' | 'failed';
+  state: 'starting' | 'converting' | 'in_progress' | 'complete' | 'failed';
+  /** Conversion progress from 0 to 100, absent for ordinary downloads. */
+  progress?: number;
   error: string | null;
 }
 

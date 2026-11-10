@@ -45,13 +45,17 @@
 }
 
 [data-x-download-control="photo"] svg {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
 }
 
 [data-x-download-control="bulk"] svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
+}
+
+[data-x-download-count][hidden] {
+  display: none;
 }
 
 [data-x-download-count] {

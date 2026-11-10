@@ -27,9 +27,13 @@ function isJobItem(value: unknown): value is DownloadJobItem {
   if (!isRecord(value)) return false;
   return isString(value.photoKey)
     && Number.isInteger(value.index)
+    && (value.expectedKind === undefined || ['image', 'video', 'animated_gif'].includes(String(value.expectedKind)))
+    && (value.outputFormat === undefined || ['jpg', 'jpeg', 'png', 'webp', 'avif', 'mp4', 'gif'].includes(String(value.outputFormat)))
     && isString(value.relativePath)
     && (value.downloadId === null || (Number.isInteger(value.downloadId) && Number(value.downloadId) >= 0))
-    && ['starting', 'in_progress', 'complete', 'failed'].includes(String(value.state))
+    && ['starting', 'converting', 'in_progress', 'complete', 'failed'].includes(String(value.state))
+    && (value.progress === undefined || (typeof value.progress === 'number' && Number.isFinite(value.progress)
+      && value.progress >= 0 && value.progress <= 100))
     && (value.error === null || isString(value.error));
 }
 

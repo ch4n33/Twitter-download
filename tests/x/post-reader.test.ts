@@ -182,6 +182,59 @@ describe('readPostSnapshot', () => {
     expect(result.snapshot.photos).toHaveLength(1);
     expect(result.snapshot.photos[0].originalFilename).toBe('CoastSceneA.jpg');
   });
+
+  it('keeps unresolved video rows out of assets while preserving the API total as partial', () => {
+    const host = document.createElement('div');
+    host.innerHTML = `
+      <article data-testid="tweet">
+        <div data-testid="User-Name"><a href="/partial_author">Partial Author</a><span>@partial_author</span></div>
+        <a href="/partial_author/status/820044"><time>Nov 10</time></a>
+        <div data-testid="mediaCarousel">
+          <a href="/partial_author/status/820044/photo/1"><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/Partial.jpg?format=jpg&amp;name=small"></div></a>
+          <a href="/partial_author/status/820044/video/2"><div data-testid="videoPlayer"><video src="blob:https://x.com/unresolved-video"></video></div></a>
+          <a href="/partial_author/status/820044/video/3"><div data-testid="videoPlayer"><video src="blob:https://x.com/unresolved-gif" loop muted></video></div></a>
+        </div>
+      </article>`;
+    const post = host.querySelector<HTMLElement>(X_SELECTORS.post)!;
+    const metadata = {
+      postId: '820044',
+      expectedMediaCount: 3,
+      assets: [
+        { mediaId: '82001', index: 1, kind: 'image' as const, url: 'https://pbs.twimg.com/media/Partial.jpg?format=jpg&name=small' },
+        { mediaId: '82002', index: 2, kind: 'video' as const, url: null },
+        { mediaId: '82003', index: 3, kind: 'animated_gif' as const, url: null },
+      ],
+    };
+
+    const result = readPostSnapshot(post, postId => postId === metadata.postId ? metadata : null);
+    expect(result?.snapshot.photos.map(item => item.index)).toEqual([1]);
+    expect(result?.snapshot.expectedPhotoCount).toBe(3);
+    expect(result?.snapshot.completeness).toBe('partial');
+    expect(JSON.stringify(result?.snapshot.photos)).not.toContain('blob:');
+  });
+
+  it('accepts an owned raw video element as a mount and never turns its poster into an image asset', () => {
+    const host = document.createElement('div');
+    host.innerHTML = `
+      <article data-testid="tweet">
+        <div data-testid="User-Name"><a href="/direct_author">Direct Author</a><span>@direct_author</span></div>
+        <a href="/direct_author/status/830044"><time>Nov 10</time></a>
+        <div data-testid="mediaCarousel" data-media-count="1">
+          <video src="https://video.twimg.com/ext_tw_video/83001/pu/vid/direct.mp4" poster="https://pbs.twimg.com/media/VideoPoster.jpg?format=jpg"></video>
+        </div>
+      </article>`;
+    const post = host.querySelector<HTMLElement>(X_SELECTORS.post)!;
+    const video = post.querySelector<HTMLVideoElement>('video')!;
+
+    const result = readPostSnapshot(post);
+    expect(result?.snapshot.photos.map(item => [item.kind, item.extension, item.originalUrl])).toEqual([
+      ['video', 'mp4', null],
+    ]);
+    expect(result?.snapshot.expectedPhotoCount).toBe(1);
+    expect(result?.snapshot.completeness).toBe('complete');
+    expect(result?.photoTargets.values().next().value).toBe(video);
+    expect(findPhotoMount(video)).toBe(video);
+  });
 });
 
 describe('X mount points', () => {

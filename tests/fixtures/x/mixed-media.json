@@ -1,0 +1,41 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "rest_id": "883004",
+        "legacy": {
+          "id_str": "883004",
+          "extended_entities": {
+            "media": [
+              { "id_str": "31101", "type": "photo", "media_url_https": "https://pbs.twimg.com/media/HarborPoC.jpg" },
+              {
+                "id_str": "31102", "type": "video",
+                "video_info": { "variants": [
+                  { "content_type": "application/x-mpegURL", "url": "https://video.twimg.com/ext_tw_video/31102/pu/pl/stream.m3u8", "bitrate": 9000000 },
+                  { "content_type": "video/mp4", "url": "https://video.twimg.com/ext_tw_video/31102/pu/vid/320x180/clip-low.mp4?tag=1", "bitrate": 256000 },
+                  { "content_type": "video/mp4", "url": "https://video.twimg.com/ext_tw_video/31102/pu/vid/1280x720/clip-high.mp4?tag=1", "bitrate": 2176000 }
+                ] }
+              },
+              {
+                "id_str": "31103", "type": "animated_gif",
+                "video_info": { "variants": [
+                  { "content_type": "video/mp4", "url": "https://video.twimg.com/tweet_video/LoopPoC.mp4" }
+                ] }
+              }
+            ]
+          }
+        },
+        "quoted_status_result": {
+          "result": {
+            "rest_id": "770099",
+            "legacy": { "id_str": "770099", "extended_entities": { "media": [
+              { "id_str": "41111", "type": "video", "video_info": { "variants": [
+                { "content_type": "video/mp4", "url": "https://video.twimg.com/ext_tw_video/41111/pu/vid/640x360/quote.mp4" }
+              ] } }
+            ] } }
+          }
+        }
+      }
+    }
+  }
+}
